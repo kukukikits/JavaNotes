@@ -18,18 +18,16 @@ import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.web.client.RestTemplate;
- 
+
 @Configuration
 public class RestTemplateUtil{
- 
     @Bean
     public RestTemplate restTemplate(RestTemplateBuilder builder) {
 	RestTemplate restTemplate = builder.build();
 	restTemplate.setRequestFactory(clientHttpRequestFactory()); 
 	return restTemplate;
     }
-	
-    
+
     @Bean
     public HttpClientConnectionManager poolingConnectionManager() {
 	PoolingHttpClientConnectionManager poolingConnectionManager = new PoolingHttpClientConnectionManager();
