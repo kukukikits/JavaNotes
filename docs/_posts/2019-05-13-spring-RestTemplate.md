@@ -1,3 +1,10 @@
+---
+layout: post
+title: Spring RestTemplate
+categories: [spring, java]
+tags: [RestTemplate]
+---
+
 # RestTemplate Using Tips
 
 1. Use connection pool & Set request time out 
