@@ -1,6 +1,7 @@
 # RestTemplate Using Tips
 
 1. Use connection pool & Set request time out 
+
 ```java
 import java.nio.charset.Charset;
 import java.util.Iterator;
@@ -71,6 +72,7 @@ public class RestTemplateUtil{
 ```
 
 2. Generic type support
+
 ```java
 public class RestTemplateUtil{
    private static RestTemplate restTemplate = new RestTemplate();
@@ -89,6 +91,7 @@ public class RestTemplateUtil{
 ```
 
 3. Request Example
+
 ```java
 //1. using url variables
 public class Test {
