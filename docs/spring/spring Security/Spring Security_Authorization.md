@@ -49,7 +49,7 @@ secure object类型。
 用户可以实现自己的 AccessDecisionManager 来控制授权的所有内容，Spring Security包括几个基于投票的AccessDecisionManager 的实现。
 下图说明了相关的类。
 
-http://localhost:8000/wordpress/wp-content/uploads/2018/08/access-decision-voting.png
+<img src='https://docs.spring.io/spring-security/site/docs/5.2.0.BUILD-SNAPSHOT/reference/htmlsingle/images/access-decision-voting.png'/>
 
 使用这种方法，在做授权决策时，会轮询一系列的AccessDecisionVoter 的实现。然后 AccessDecisionManager根据对投票的评估结果来决定
 是否要抛出AccessDeniedException异常。
@@ -107,6 +107,7 @@ fully-authenticated and remember-me authenticated users）。许多网站对reme
 
 下图展示了Spring Security的AfterInvocationManager和它的具体实现：
 
+<img src='https://docs.spring.io/spring-security/site/docs/5.2.0.BUILD-SNAPSHOT/reference/htmlsingle/images/after-invocation.png' />
 
 和很多其他的Spring security组件一样，AfterInvocationManager只有一个具体的实现，即 AfterInvocationProviderManager，它会轮询
 一个AfterInvocationProvider 的列表。AfterInvocationProvider可以修改secure object调用返回的对象，或者抛出AccessDeniedException

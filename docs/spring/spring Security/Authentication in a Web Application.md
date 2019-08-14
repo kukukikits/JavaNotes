@@ -1,0 +1,29 @@
+#9.4 Authentication in a Web Application Web应用中的身份验证
+
+## Web应用中的身份验证
+我们先来看一下在一个使用Spring Security的Web应用中（不使用web.xml安全设置）是怎么进行用户验证和建立安全上下文的：
+
+1. 访问主页，点击链接
+2. 请求发送到服务器后，服务器发现你访问的是一个被保护的资源
+3. 由于你当前的身份是没有经过验证的，服务器会发送一个响应到客户端，告诉你需要进行身份验证。这个响应可以是一个HTTP响应码，也可以是重定向到某个web页面
+4. 根据依赖的身份验证机制，浏览器会把你重新定位到一个登陆页面让你填写登陆信息，或者通过其他手段直接获取你的个人信息（通过最基础的身份验证对话框、cookie、或者X.509 certificate等）
+5. 浏览器向服务器发送响应，这个响应可以是一个HTTP POST，并包含了从表单中获取的个人信息，或者HTTP头部包含了你的身份信息。
+6. 接下来服务器会验证你提供的验证信息是否有效。如果有效，那么执行下一步，否则浏览器会让你重新登录，也就是重新从第二步开始。
+7. 重试先前那个引发身份验证流程的原始请求。此时，如果你已经有对应保护性资源的访问权限，那么请求成功，否则返回HTTP code 403，也就是拒绝访问。
+
+Spring Security有不同的类，负责上面描述的大部分步骤。按照被使用的顺序，这些类有：ExceptionTranslationFilter,  AuthenticationEntryPoint 和 “authentication mechanism”，它负责调用我们在上一节中看到的AuthenticationManager。
+
+###  ExceptionTranslationFilter
+ExceptionTranslationFilter是一个Spring Security过滤器，它负责检测抛出的任何Spring Security异常。此类异常通常会由AbstractSecurityInterceptor拦截器抛出，后者是授权服务的主要提供者。我们会在下一章讨论AbstractSecurityInterceptor，但现在我们只需要知道它产生了Java异常，并且对HTTP一无所知，也不知道如何对主体进行身份验证。相反，ExceptionTranslationFilter提供了这些服务，负责返回错误代码403（如果主体已经过身份验证，但是缺少足够的访问权限——就像上面步骤7中所述），或者启动一个 AuthenticationEntryPoint（如果主体没有通过身份验证，那么重新从上面步骤3开始）。
+### AuthenticationEntryPoint
+AuthenticationEntryPoint 负责上面步骤3。可以想象，每个web应用程序都有一个默认的认证策略（这可以像Spring Security中的其他东西一样配置）。每个主要的身份验证系统都有自己的AuthenticationEntryPoint实现，它通常只执行步骤3中描述的其中一个操作。
+### 认证机制
+一旦您的浏览器提交了身份验证凭证（HTTP post表单或HTTP头），服务器上就需要有“收集”这些认证信息的东西。接下来我们讨论的就是上面的步骤6。在Spring Security中，我们把从用户代理（通常是web浏览器）收集认证详细信息的过程称为“身份验证机制”。例如表单基础登录和基本身份验证。一旦从用户代理中收集了身份验证信息，就会构建一个Authentication “请求”对象，然后把它提交给AuthenticationManager。
+
+认证机制接收到完全填充的认证对象后，它会认为请求是有效的，然后把Authentication对象放到SecurityContextHolder里，最后让原始的请求重新尝试（步骤7）。如果AuthenticationManager拒绝了请求，认证机制就会要求用户代理进行重试（步骤2）。
+### 在请求之间存储安全上下文
+根据应用程序的类型，可能需要有一个策略来存储用户操作之间的安全上下文。在典型的web应用程序中，用户登录只要一次就会被session Id标识。服务器会在会话期间缓存主体的信息。在Spring Security中，在请求之间储存安全上下文的功能由SecurityContextPersistenceFilter实现，默认情况下，它把上下文信息保存在HttpSession属性中。它会把每个请求对应的上下文信息复制到SecurityContextHolder ，并且在请求结束时清除SecurityContextHolder。为了安全起见，您不应该直接与HttpSession交互，这样做也不合理，因为你总是可以通过SecurityContextHolder 来获取相关信息，何必要直接操作HttpSession呢？
+
+许多其他类型的应用程序（例如，无状态的RESTful web服务）不使用HTTP sessions ，并对每个请求重新进行身份验证。然而为了确保在每个请求之后都清除了SecurityContextHolder ，把SecurityContextPersistenceFilter 放在链中仍然非常重要。
+
+&#9728;注意：在单个会话中接收并发请求的应用程序中，同一个SecurityContext实例将在线程之间共享。尽管正在使用ThreadLocal，但它是为每一个线程从HttpSession检索到的都是同一个实例。如果您希望临时更改线程正在运行的上下文，这将产生影响。如果您使用SecurityContextHolder.getContext()，并在返回的context对象上调用setAuthentication(anAuthentication) ，那么所有共享同一个SecurityContext实例的并发线程的Authentication 对象都会发生变化。您可以自定义SecurityContextPersistenceFilter 的行为，为每个请求创建一个全新的SecurityContext ，防止一个线程的更改影响另一个线程。或者，您可以在临时改变上下文的时候创建一个新的实例。 SecurityContextHolder.createEmptyContext()方法总是返回一个新的上下文实例。
