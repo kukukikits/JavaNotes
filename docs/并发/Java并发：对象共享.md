@@ -5,7 +5,8 @@
 由于线程A和线程B在不同步的情况下，B线程可能读取到旧的sharedVariable的值，导致B线程读取了错误的数据，我们把这种错误的数据叫做：失效数据。
 
 使用加锁的方式可以保证可见性，也可以使用volatile申明保证某一个变量的可见性
-<pre class="prettyprint">//加锁保证同步，既保证了可见性，也保证了原子性
+```java
+//加锁保证同步，既保证了可见性，也保证了原子性
 @ThreadSafe
 public class SynchronizedInteger(){
     private int value;
@@ -21,14 +22,19 @@ while(!stop){
 }
  
 //线程2
-stop = true;</pre>
+stop = true;
+```
 <h3>2.发布与逸出（Publish and Escape）</h3>
 发布：使对象能够在当前作用域之外的代码中使用，即将对象共享出去
 
 逸出：当某个不应该被发布的对象被发布时，这种情况称为逸出
 
 下面是两个使对象逸出的两个例子：
-<pre class="prettyprint">//内部可变状态逸出<img src="http://47.93.1.79/wordpress/wp-content/uploads/2017/12/失败-1-150x150.png" alt="" width="150" height="150" class="img wp-image-226 size-thumbnail alignright" title="don&#96;t" style="color: #555555; font-family: Roboto, Helvetica, Arial, sans-serif; font-size: 17px; white-space: normal;" />
+
+#:worried:
+```java
+//内部可变状态逸出
+
 public class UnsafeStates {
     private String[] states = new String[] { 'A', 'B' };
     public String[] getStates() {
@@ -67,12 +73,15 @@ public class ThisEscape {
     }
     interface Event {
     }
-}</pre>
+}
+```
 以上两个是错误的用法，不要发布不应该发布的对象，不要在构造过程中使this逸出。
 
 下面来看看使用工厂方法防止this引用在构造过程中逸出的写法：
-<pre class="prettyprint">public class SafeListener {
-    private final EventListener listener;<img src="http://47.93.1.79/wordpress/wp-content/uploads/2017/12/成功-转换.png" alt="" width="128" height="128" class="size-full wp-image-229 alignright" />
+#:smile:
+```java
+public class SafeListener {
+    private final EventListener listener;
     //使用私有构造函数
     private SafeListener() {
         listener = new EventListener() {
@@ -87,15 +96,16 @@ public class ThisEscape {
         return safe;
     }
 }
-</pre>
+```
 <h3>3.构造不可变对象（Immutable Object）</h3>
 不可变对象一定是线程安全的。不可变对象只有一种状态，并且该状态由<span style="color: #ff0000;">构造函数</span>控制。
 
 下面是在可变对象的基础上构建的不可变类
-<pre class="prettyprint">@Immutable
+```java
+ @Immutable
  public final class ThreeStooges {
     //可变对象HashSet，不可变对象stooges(构造函数中初始化完成后就不能再改变)
-    private final Set&lt;String&gt; stooges = new HashSet&lt;String&gt;();
+    private final Set<String> stooges = new HashSet<String>();
 
     public ThreeStooges() {
         stooges.add("Moe");
@@ -106,7 +116,8 @@ public class ThisEscape {
     public boolean isStooge(String name) {
         return stooges.contains(name);
     }
-}</pre>
+}
+```
 那么如何正确地构造不可变对象呢？
 <ul>
  	<li>对象创建以后其状态就不能修改，也就是说不能为对象提供setter方法；</li>
@@ -119,7 +130,8 @@ public class ThisEscape {
 
 这里也有一篇关于构造不可变对象的详细的解释<a href="http://blog.csdn.net/waeceo/article/details/54377218">http://blog.csdn.net/waeceo/article/details/54377218</a>
 <h3>3.1示例：使用volatile类型来发布不可变对象</h3>
-<pre class="prettyprint">@Immutable  //不可变对象
+```java
+@Immutable  //不可变对象
 public class OneValueCache {
     private final BigInteger lastNumber;
     private final BigInteger[] lastFactors;
@@ -162,7 +174,8 @@ public class VolatileCachedFactorizer extends GenericServlet implements Servlet 
         // Doesn't really factor
         return new BigInteger[]{i};
     }
-}</pre>
+}
+```
 <h3>3.安全发布<span style="color: #000000;">对象</span></h3>
 对象发布只是用于确保其他线程能够看到该对象处于已经发布的状态。
 
@@ -175,11 +188,13 @@ public class VolatileCachedFactorizer extends GenericServlet implements Servlet 
  	<li>将对象的引用保存到某个正确构造对象的final类型域中；</li>
  	<li>将对象的引用保存到一个由锁保护的域中</li>
 </ul>
-<pre class="prettyprint">//静态初始化
+
+```java
+//静态初始化
 public static Holder holder = new Holder(42);
 
 //对象引用保存到volatile或AtomicReference中
-private volatile Set&lt;String&gt; stooges = new HashSet&lt;String&gt;();
+private volatile Set<String> stooges = new HashSet<String>();
 private AtomicLong count = new AtomicLong(0);
 
 //将对象的引用保存到final类型域中，这里的前提是这个对象在某个正确构造对象的final类型域中
@@ -192,7 +207,8 @@ public class Syn(){
   public synchronized void increase(){
      count++;
   }
-}</pre>
+}
+```
 <h3>4.安全地共享对象</h3>
 安全地共享对象就是说保证线程安全，一些实用的策略如下：
 <ul>
