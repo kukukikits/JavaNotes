@@ -36,13 +36,70 @@ public class ThreadLocalExample implements Runnable{
 ```
 
 # ThreadLocal原理
-
 ```puml
 @startuml
-Class01 <|-- Class02
-Class03 *-- Class04
-Class05 o-- Class06
-Class07 .. Class08
-Class09 -- Class10
+ThreadLocal +-- SuppliedThreadLocal
+ThreadLocal +-- ThreadLocalMap
+ThreadLocalMap +-- Entry
+ThreadLocal <|-- SuppliedThreadLocal
+Thread *-- ThreadLocalMap
+WeakReference <|-- Entry
+class Thread {
+    ~ThreadLocal.ThreadLocalMap threadLocals
+    ~ThreadLocal.ThreadLocalMap inheritableThreadLocals
+}
+
+class ThreadLocal{
+    +ThreadLocal()
+}
+
+class ThreadLocalMap<T>{
+    ~ThreadLocalMap(ThreadLocal<?> firstKey, Object firstValue)
+    -ThreadLocalMap(ThreadLocalMap parentMap)
+}
+
+class SuppliedThreadLocal<T>{
+    ~SuppliedThreadLocal(Supplier<? extends T> supplier)
+}
+
+class Entry{
+    Entry(ThreadLocal<?> k, Object v)
+}
+
+class WeakReference<ThreadLocal<?>>{
+
+}
 @enduml
+```
+
+从上图可以看出，Thread类中有一个threadLocals和inheritableThreadLocals实例变量，这两个变量的默认值都是null，只有当调用ThreadLocal的get或set方法时才初始化他们。下面是ThreadLocal的get和set方法：
+
+```java
+    public void set(T value) {
+        Thread t = Thread.currentThread();
+        ThreadLocalMap map = getMap(t);
+        if (map != null)
+            map.set(this, value);
+        else
+            createMap(t, value);
+    }
+    ThreadLocalMap getMap(Thread t) {
+        return t.threadLocals;
+    }
+```
+
+从上可知，使用ThreadLocal保存变量时，变量最终保存在当前线程的threadLocals（ThreadLocal.ThreadLocalMap内部类）中。ThreadLocal.ThreadLocalMap可以存储以ThreadLocal为key的键值对。一个ThreadLocal实例只能在当前线程保存一个变量，声明多个ThreadLocal实例变量就可以在一个线程保存多个变量，因为ThreadLocalMap是以ThreadLocal作为key的。
+
+# ThreadLocal 内存泄露问题
+ThreadLocalMap底层使用Entry存储键值对，而Entry中key为 ThreadLocal的弱引用,value是强引用。所以，如果ThreadLocal没有被外部强引用的情况下，在垃圾回收的时候会key会被清理掉，而value不会被清理掉。这样一来，ThreadLocalMap 中就会出现key为null的Entry。假如我们不做任何措施的话，value永远无法被GC回收，这个时候就可能会产生内存泄露。ThreadLocalMap实现中已经考虑了这种情况，在调用set()、get()、remove()方法的时候，会清理掉key为null的记录。使用完 ThreadLocal方法后最好手动调用remove()方法
+```java
+    static class Entry extends WeakReference<ThreadLocal<?>> {
+        /** The value associated with this ThreadLocal. */
+        Object value;
+
+        Entry(ThreadLocal<?> k, Object v) {
+            super(k);
+            value = v;
+        }
+    }
 ```
