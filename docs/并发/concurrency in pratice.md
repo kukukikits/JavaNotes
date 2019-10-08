@@ -149,3 +149,98 @@ public class VolatileCachedFactorizer implements Servlet{
 
 ```
 
+## 3.5 Safe Publication
+
+### 3.5.3 Safe Publication Idioms
+Objects that are not immutable must be safely published, which usually entails synchronization by both the publishing and the consuming thread. For the moment, let's focus on ensuring that the consuming thread can see the object in its as published state; we'll deal with visibility of modifications made after publication soon.
+
+:warning: To publish an object safely, both the reference to the object and the object's state must be made visible to other threads at the same time. A properly constructed object can be safely published by:
+- Initializing an object reference from a static initializer;
+- Storing a reference to it into a volatile field or AtomicReference;
+- Storing a reference to it into a final field of a properly constructed object; or
+- Storing a reference to it into a field that is properly guarded by a lock.
+
+### 3.5.5 Mutable objects
+:warning: The publication requirements of an object depend on its mutability:
+- Immutable objects can be published through any mechanism;
+- Effectively immutable objects must be safely published;
+- Mutable objects mush be safely published, and must be either thread-safe or guarded by a lock.
+
+### 3.5.6 Sharing Objects Safely
+:warning:The most useful policies for using and sharing objects in a concurrent program are:  
+- Thread‐confined. A thread‐confined object is owned exclusively by and confined to one thread, and can be modified by  its owning thread.  
+- Shared read‐only. A shared read‐only object can be accessed concurrently by multiple threads without additional  synchronization, but cannot be modified by any thread. Shared read‐only objects include immutable and effectively  immutable objects.  
+- Shared thread‐safe. A thread‐safe object performs synchronization internally, so multiple threads can freely access it  through its public interface without further synchronization.  
+- Guarded. A guarded object can be accessed only with a specific lock held. Guarded objects include those that are  encapsulated within other thread‐safe objects and published objects that are known to be guarded by a specific lock.  
+
+
+# Chapter 4 Composing Objects
+## 4.1 Designing a Thread-safe Class
+:warning:The design process for a thread-safe class should include these three basic elements:
+- Identify the variables that form the object's state;
+- Identify the invariants that constrain the state variables;
+- Establish a policy for managing concurrent access to the object's state.
+### 4.1.1 Gathering Synchronization Requirements
+### State-dependent Operations
+### State Ownership
+
+## 4.2 Instance Confinement
+:warning:
+- Encapsulating data within an object confines access to the data to the object's methods, making it easier to ensure that the data is always accessed with the appropriate lock held.
+- Confinement makes it easier to build thread-safe classed because a class that confines its state can be analyzed for thread safety without having to examine the whole program.
+
+### 4.2.1 The Java Monitor Pattern
+- Java Monitor Pattern: encapsulating all mutable state and guarding it with the object's own intrinsic lock.
+
+```java
+public class PrivateLock{
+     private final Object myLock = new Object();
+     @GuardedBy("myLock")
+     Widget widget;
+
+     void someMethod() {
+          synchronized(myLock) {
+               //Access or modify the state of widget
+          }
+     }
+}
+```
+Making the lock object private encapsulates the lock so that client code cannot acquire it, whereas a publicly accessible lock allows client code participate in its synchronization policy - correctly or incorrectly.
+
+## 4.3 Delegating Thread Safety
+
+###:cry: Number Range Class that does Not Sufficiently Protect Its Invariants. Don't Do this
+
+```java
+public class NumberRange{
+     //INVARIANT: lower <= upper
+     private final AtomicInteger lower = new AtomicInteger(0);
+     private final AtomicInteger upper = new AtomicInteger(0);
+
+     public void setLower(int i) {
+          //warning -- unsafe check-then-act
+          if(i > upper.get()){
+               throw new IllegalArgumentException("can't set lower to " +i+" > upper");
+          }
+          lower.set(i);
+     }
+
+     public void setUpper(int i) {
+          //warning -- unsafe check-then-act
+          if(i < lower.get()){
+               throw new IllegalArgumentException("can't set upper to " +i+" < lower");
+          }
+          upper.set(i);
+     }
+
+     public boolean isInRange(int i) {
+          return (i >= lower.get() && i<=upper.get());
+     }
+}
+```
+
+:warning:
+If a class is composed of multiple independent thread-safe state variables and has no operations that have any invalid state transitions, then it can delegate thread safety to the underlying state variables.
+
+### 4.3.4 Publishing Underlying State Variables
+:warning: If a state variable is thread-safe, does not participate in any invariants that constrain its value, and has no prohibited state transitions for any of its operations, then it can safely be published.
