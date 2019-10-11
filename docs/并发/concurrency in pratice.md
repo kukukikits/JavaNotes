@@ -244,3 +244,68 @@ If a class is composed of multiple independent thread-safe state variables and h
 
 ### 4.3.4 Publishing Underlying State Variables
 :warning: If a state variable is thread-safe, does not participate in any invariants that constrain its value, and has no prohibited state transitions for any of its operations, then it can safely be published.
+
+# 5 Chapter 5 Building Blocks
+## 5.1 Synchronized Collections
+
+### Problems with Synchronized Collections
+Compound actions need client-side locking to guarantee
+safety. 
+:warning: The synchronized collection classes guard each method with the lock on the synchronized collection object itself. So, by acquiring the collection lock we can make a compound action atomic, like below:
+```java
+public static Object getLast(Vector list) {
+     synchronized(list) {
+          int lastIndex = list.size() - 1;
+          return list.get(lastIndex);
+     }
+}
+
+public static void deleteLast(Vector list) {
+     synchronized(list) {
+          int lastIndex = list.size() - 1;
+          list.remove(lastIndex);
+     }
+}
+```
+
+### 5.1.2 Iterators and Concurrent modification exception
+:warning: The iterators returned by the synchronized collections are not designed to deal with concurrent modification, and they are fail-fast - meaning that if they detect that the collection has changed since iteration began, they throw the unchecked *ConcurrentModificationException*.
+
+:warning: *ConcurrentModificationException* can arise in single-threaded code as well; this happens when objects are removed from the collection directly rather than through iterator.remove.
+
+An alternative to locking the collection during iteration is to clone the collection and iterate the copy instead. Since the clone is thread-confined, no other thread can modify it during iteration, eliminating the possibility of ConcurrentModificationException. (The collection still must be locked during the clone operation itself.) Cloning the collection has an obvious performance cost.
+
+### 5.1.3 Hidden Iterators
+:cry::b::a:d: Iteration Hidden within String Concatenation. *Don't Do this*
+```java
+public class HiddenIterator {
+     @GuardedBy("this")
+     private final Set<Integer> set = new HashSet<Integer>();
+
+     public synchronized void add(Integer i) {
+          set.add(i);
+     }
+
+     public synchronized void remove(Integer i) {
+          set.remove(i);
+     }
+
+     public void addTenThings() {
+          Random r = new Random();
+          for (int i = 0; i < 10; i++) {
+               add(r.nextInt());
+          }
+           //implicitly call set collection's 
+           //toString method. Could throw 
+           //ConcurrentModificationException here.
+          System.out.println("Debug: added then elements to " + set)
+     }
+}
+```
+
+## 5.2 Concurrent Collections
+###🤓:
+> Replacing synchronized collection with concurrent collections can offer dramatic scalability improvements with little risk.
+
+### 5.2.1 ConcurrentHashMap
+The one feature offered by the synchronized map implementations but not by ConcurrentHashMap is the ability to lock the map for exclusive access. With HashTable and synchronizedMap, acquiring the Map lock prevents any other thread from accessing it. On the whole, though, this is a reasonable tradeoff: **concurrent collections should be expected to change their contents continuously**. 
