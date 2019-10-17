@@ -360,3 +360,63 @@ public class TaskRunnable implements Runnable {
 ```
 
 You can get much more sophisticated with interruption, but these two approaches should work in the vast majority of situations. But there is one thing you should not do with *InterruptionException* - catch it and do nothing in response. This deprives code higher up on the call stack of the opportunity to act on the interruption, because the evidence that the thread was interrupted is lost. The only situation in which it is acceptable to swallow an interrupt is when you are extending Thread and therefore control all the code higher up on the call stack.
+
+### 5.5.2 Future Task
+**Using *FutureTask* to Preload Data that is needed later.**
+```java
+public class Preloader {
+     private final FutureTask<ProductInfo> future = new FutureTask<>(new Callable<>(){
+          public ProductInfo call() throws DataLoadException {
+               return loadProductInfo();
+          }
+     });
+
+     private final Thread thread = new Thread(future);
+
+     public void start() {
+          thread.start();
+     }
+
+     public ProductInfo get() throws DataLoadException, InterruptedException{
+          try {
+               return future.get();
+          } catch(ExecutionException e) {
+               Throwable cause = e.getCause();
+               if(cause instance of DataLoadException) {
+                    throw (DataLoadException) cause;
+               } else {
+                    throw launderThrowable(cause);
+               }
+          }
+     }
+}
+```
+
+*Preloader* creates a FutureTask that describes the task of loading product information from a database and a thread in which the computation will be performed. It provides a start method to start the thread, since it is inadvisable to start a thread from a constructor or static initializer. When the program later needs the *ProductInfo*, it can call get, which returns the loaded data if it is ready, or waits for the load to complete if not.
+
+Tasks described by Callable can throw checked and unchecked exceptions, and any code can throw an *Error*. Whatever the task code my throw, it is wrapped in an *ExecutionException* and rethrown from *Future.get*. This complicates code that calls get, not only because it must deal with the possibility of ExecutionException (and the unchecked CancellationException), but also because the cause of the ExecutionException is returned as a Throwable, which is inconvenient to deal with.
+
+When get throws an *ExecutionException* in *Preloader*, the cause will fall into on of three categories: 
+- a checked exception thrown by the *Callable*,
+- a *RuntimeException*,
+- or an *Error*.
+
+We must handle each of these cases separately, but we will us the *landerThrowable* utility method in below to encapsulate some of the **messier** exception-handling logic. Before calling *launderThrowable*, *Preloader* tests for the known checked exceptions and rethrows them. That leaves only unchecked exceptions, which *Preloader* handles by calling *launderThrowable* and throwing the result. If the *Throwable* passed to *launderThrowable* is an *Error*, *launderThrowable* rethrows it directly; if it is not a *RuntimeException*, it throws and *IllegalStateException* to indicate a logic error. That leaves only *RuntimeException*, which *launderThrowable* returns to its caller, and which the caller generally rethrows.
+
+***Coercing and Unchecked *Throwable* to a *RuntimeException***
+```java
+/**
+ * If the Throwable is an Error, throw it;
+ * If it is a RuntimeException return it,
+ * otherwise throw IllegalStateException.
+ */
+ public static RuntimeException launderThrowable(Throwable t) {
+      if(t instanceof RuntimeException) {
+           return (RuntimeException) t;
+      } else if (t instanceof Error) {
+           throw (Error)  t;
+      } else {
+           throw new IllegalStateException("Not unchecked", t);
+      }
+ }
+```
