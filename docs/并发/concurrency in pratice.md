@@ -420,3 +420,286 @@ We must handle each of these cases separately, but we will us the *landerThrowab
       }
  }
 ```
+
+### 5.5.3 Semaphores
+Counting semaphores are used to control the number of activities that can access a certain resource or perform a given action at the same time. Counting semaphores can be used to implement resource pools or to impose a bound on a collection.
+
+
+A degenerate case of a counting semaphore is a binary semaphore, a Semaphore with an initial count of one. A binary semaphore can be used as a mutex with non-reentrant locking semantics; whoever holds the sole permit holds the mutex.
+
+Uses of semaphores:
+1. implementation of resource pools such as database connection pools. See the example used in the bounded buffer class in **Chapter 12**(An easier way to construct a blocking objet pool would be to use a *BlockingQueue* to hold the pooled resources.).
+2. Turn any collection into a blocking bounded collection, as illustrated by *BoundedHashSet* in Listing **5.14**.
+
+
+**Listing 5.14 Using Semaphore to Bound a Collection.**
+```java
+public class BoundedHashSet<T> {
+     private final Set<T> set;
+     private final Semaphore sem;
+
+     public BoundHashSet(int bound) {
+          this.set = Collections.synchronizedSet(new HashSet<T>());
+          sem = new Semaphore(bound);
+     }
+
+     public boolean add(T o) throws InterruptedException {
+          sem.acquire();
+          boolean wasAdded = false;
+          try {
+               wasAdded = set.add(o);
+               return wasAdded;
+          } finally {
+               if(!wasAdded) {
+                    sem.release();
+               }
+          }
+     }
+
+     public boolean remove(Object o) {
+          boolean wasRemoved = set.remove(o);
+          if (wasRemoved) {
+               sem.release();
+          }
+          return wasRemoved;
+     }
+}
+```
+
+### 5.5.4 Barriers
+
+*CyclicBarrier* allows a fixed number of parties to rendezvous repeatedly at a barrier point and is useful in parallel iterative algorithms that break down a problem into a fixed number of independent subproblems. If a call to await times times out or a thread blocked in await is interrupted, then the barrier is considered broken and all outstanding calls to await terminate with *BrokenBarrierException*.
+
+*CellularAutomata* in Listing 5.15 demonstrates using a barrier to compute a cellular automata simulation, such as Conway's Life game(Gardner, 1970).
+
+
+**Coordinating Computation in a Cellular Automaton with CyclicBarrier**
+```java
+public class CellularAutomata {
+     private final Board mainBoard;
+     private final CyclicBarrier barrier;
+     private final Worker[] workers;
+
+     public CellularAutomata(Board board) {
+          this.mainBoard = board;
+          int count = Runtime.getRuntime().availableProcessors();
+          this.barrier = new CyclicBarrier(count, new Runnable() {
+               public void run() {
+                    mainBoard.commitNewValues();
+               }
+          });
+          this.workers = new Worker[count];
+          for (int i = 0; i < count; i++) {
+               workers[i] = new Work(mainBoard.getSubBoard(count, i));
+          }
+     }
+
+     private class Worker implements Runnable {
+          private final Board board;
+
+          public Worker(Board board) {
+               this.board = board;
+          }
+
+          public void run() {
+               while(!board.hasConverged()) {
+                    for (int x = 0; x <board.getMaxX(); x++) {
+                         for (int y =0; y< board.getMaxY(); y++) {
+                              board.setNewValue(x, y, computeValue(x, y));
+                         }
+                    }
+                    try {
+                         barrier.await();
+                    } catch (InterruptedException ex) {
+                         return ;
+                    } catch (BrokenBarrierException ex) {
+                         return ;
+                    }
+               }
+          }
+     }
+
+     public void start() {
+          for(int i =0; i< workers.length; i++) {
+               new Thread(workers[i]).start();
+          }
+          mainBoard.waitForConvergence();
+     }
+}
+```
+
+## 5.6 Building an Efficient, Scalable Result Cache
+
+Caching a Future instead of a value creates the possibility of cache pollution: if a computation is cancelled ore fails, future attempts to compute the result will also indicate cancellation or failure. To avoid this, *Memorizer* removes the Future from the cache if it detects that the computation was cancelled; it might also be desirable to remove the Future upon detecting a *RuntimeException* if the computation might succeed on a future attempt. *Memorizer* also does not address cache expiration, but this could be accomplished by suing a subclass of *FutureTask* that associates an expiration time with each result and periodically scanning the cache for expired entires.(Similarly, it does not address cache eviction, where old entires are removed to make room for new ones so that the cache does not consume too much memory.)
+
+**Final Implementation of Memorizer**
+```java
+public class Memorizer<A, V> implements Computable<A,V> {
+     private final ConcurrentMap<A, Future<V> cache> = new ConcurrentHashMap<>();
+     private final Computable<A, V> c;
+
+     public V compute(final A arg) throws InterruptedException {
+          while(true) {
+               Future<V> f = cache.get(arg);
+               if (f == null) {
+                    Callable<V> eval = new Callable<V>() {
+                         public V call() throws InterruptedException {
+                              return c.compute(arg);
+                         }
+                    };
+                    FutureTask<V> ft = new FutureTask<>(eval);
+                    f = cache.putIfAbsent(arg, ft);
+                    if(f == null) {
+                         f == ft;
+                         ft.run();
+                    }
+               }
+               try {
+                    return f.get();
+               } catch (CancellationException e) {
+                    cache.remove(arg, f);
+               } catch (ExecutionException e) {
+                    throw launderThrowable(e.getCause());
+               }
+          }
+     }
+}
+```
+
+**Factorizing Servlet that Caches Results Using Memorizer**
+```java 
+@ThreadSace
+public class Factorizer implements Servlet {
+     private final Computable<BigInteger, BigInteger[]> c = new Computable<>(){
+          public BigInteger[] compute(BigInteger arg) {
+               return factor(arg);
+          }
+     };
+
+     private final Computable<BigInteger, BigInteger[]> cache = new Memorizer<>(c);
+
+     public void service(ServletRequest req, ServletResponse resp) {
+          try {
+               BigInteger i = extractFromRequest(req);
+               encodeIntoResponse(resp, cache.compute(i));
+          } catch(InterruptedException e) {
+               encodeError(resp, "Factorization Interrupted");
+          }
+     }
+}
+```
+
+# Summary of Part I
+- It's the mutable state, stupid.
+All concurrency issues boil down to coordinating access to mutable state. The less mutable state, the easier it is to ensure thread safety.
+- Make fields final unless they need to be mutable.
+- Immutable objects are automatically thread-safe.
+Immutable objects simplify concurrent programming tremendously. They are simpler and safer, and can be shared freely without locking or defensive copying.
+- Encapsulation makes it practical to manage the complexity.
+You could write a thread-safe program with all data stored in global variables, but why would you want to? Encapsulating date within objects makes it easier to preserve their invariants; encapsulating synchronization within objects makes it easier to comply with their synchronization policy.
+- Guard each mutable variable with a lock.
+- Guard all variables in an invariant with the same lock.
+- Hold locks for the duration of compound actions.
+- A program that accesses a mutable variable from multiple threads without synchronization is a broken program.
+- Don't rely on clever reasoning about why you don't need to synchronize.
+- Include thread safety in the design processor explicitly document that your class is not thread-safe.
+- Document your synchronization policy.
+
+#
+### 6.2.4 Executor Life cycle
+JVM can't exit until all the (non-daemon) threads have terminated, so failing to shut down an Executor could prevent the JVM from exiting.
+
+In shutting down an application, there is a **spectrum** from graceful shutdown (finish what you've started but don't accept any new work) to **abrupt** shutdown (turn off the power to the machine room), and various points in between. Since Executors provide a service to applications, they should be able to be shut down as well, both gracefully and abruptly, and feedback information to the application about the status of tasks that were affected by the shutdown.
+
+To address the issue of execution service lifecycle, the *ExecutorService* interface extends *Executor*, adding a number of methods for lifecycle management (as wll as some convenience methods for task submission). The lifecycle management methods of *ExecutorService*  are shown in Listing 6.7
+
+**Listing 6.7 Lifecycle Methods in ExecutorService**
+```java
+public interface ExecutorService extends Executor {
+     void shutdown();
+     List<Runnable> shutdownNow();
+     boolean isShutdown();
+     boolean isTerminated();
+     boolean awaitTermination(long timeout, TimeUnit unit) throw InterruptedException;
+     // ... additional convenience methods for task submission.
+}
+```
+
+The lifecycle implied by *ExecutorService* has three states:
+- running (ExecutorServices are initially created in the running state),
+- shutting down (the graceful *shutdown* method, or the abrupt *shutdownNow* method),
+- and terminated (Once all tasks have completed, the *ExecutorService* transitions to the terminated state).
+
+:warning: You can wait for an ExecutorService to reach the terminated state with *awaitTermination*, or poll for whether it has ye terminated with *isTerminated*. It is common to follow *shutdown* immediately by *awaitTermination*, creating the effect of synchronously shutting down the *ExecutorService*.
+
+### 6.2.5 Delayed and Periodic Tasks
+The *Timer* facility manages the execution of deferred("run this task in 100ms") and periodic("run this task every 10ms") tasks. However, Timer has some drawbacks, and *ScheduledThreadPoolExecutor* should be thought of as its replacement.
+> *Timer* does have support for scheduling based on absolute, not relative time, so that tasks can be sensitive to changes in the system clock; *ScheduledThreadPoolExecutor* supports only relative time.
+
+The *Timer*'s drawbacks are:
+1.  A *Timer* creates only a single thread for executing timer tasks. If a timer task takes too long to run, the timing accuracy of other *TimerTasks* can suffer.
+     > Scheduled thread pools address this limitation by letting you provide multiple threads for executing deferred and periodic tasks.
+2. A *Timer* behaves poorly if a *TimerTask* throws an unchecked exception. An unchecked exception thrown from a *TimerTask* terminates the timer thread. *Timer* also doesn't resurrect the thread in this situation; instead, it erroneously assumes the entire *Timer* was cancelled. In this case, *TimerTasks* that are already scheduled but not yet executed are never run, and new tasks cannot be scheduled.(This problem is called "thread leakage")
+
+OutOfTime in Listing 6.9 illustrates how a *Timer* can become confused in this manner. You might expect the program to run for six seconds and exit, but what actually happens is that it terminates after on second with an *IllegalStateException* whose message text is "Timer already cancelled".
+
+:cry:**Listing 6.9 Class Illustrating Confusing Timer Behavior**
+```java
+public class OutOfTime{
+     public static void main(String[] args) throw Exception {
+          Timer timer = new Timer();
+          timer.schedule(new ThrowTask(), 1);
+          SECONDS.sleep(1);
+          timer.schedule(new ThrowTask(), 1);
+          SECONDS.sleep(5);
+     }
+
+     static class ThrowTask extends TimerTask{
+          public void run() {
+               throw new RuntimeException();
+          }
+     }
+}
+```
+
+### 6.3.4 Limitations of Parallelizing Heterogeneous Tasks
+
+:cry: **Listing 6.13 Waiting for Image Download with Future**
+```java
+public class FutureRenderer {
+     private final ExecutorService executor = ...;
+
+     void renderPage(CharSequence source) {
+          final List<ImageInfo> imageInfos = scanForImageInfo(source);
+          Callable<List<ImageData>> task = new Callable<>(){
+               public List<ImageData> call() {
+                    List<ImageData> result = new ArrayList<>();
+                    for (ImageInfo imageInfo : imageInfos) {
+                         result.add(imageInfo.downloadImage());
+                    }
+                    return result;
+               }
+          };
+
+          Future<List<ImageData>> future = executor.submit(task);
+          renderText(source);
+
+          try {
+               List<ImageData> imageData = future.get();
+               for(ImageData data : imageData) {
+                    renderImage(data);
+               }
+          } catch (InterruptedException e) {
+               // Re-assert the thread's interrupted status
+               Thread.currentThread().interrupt();
+               // We don't need the result, so cancel the task too
+               future.cancel(true);
+          } catch( ExecutionException e) {
+               throw launderThrowable(e.getCause());
+          }
+     }
+}
+```
+:imp: In the last example, we tried to execute two different types of tasks in parallel - downloading the images and rendering the page. But obtaining significant performance improvements by trying to parallelize sequential heterogeneous tasks can be tricky.  Try to increase concurrency by parallelizing heterogenous activities can be a lot of work, and there is a limit to how much additional concurrency you can get out of it.
+
+🍖:The real performance **payoff** of dividing a program's workload into tasks comes when there are a large number of independent, **homogeneous**  tasks that can be processed concurrently. 
