@@ -703,3 +703,68 @@ public class FutureRenderer {
 :imp: In the last example, we tried to execute two different types of tasks in parallel - downloading the images and rendering the page. But obtaining significant performance improvements by trying to parallelize sequential heterogeneous tasks can be tricky.  Try to increase concurrency by parallelizing heterogenous activities can be a lot of work, and there is a limit to how much additional concurrency you can get out of it.
 
 🍖:The real performance **payoff** of dividing a program's workload into tasks comes when there are a large number of independent, **homogeneous**  tasks that can be processed concurrently. 
+
+### 6.3.5 *CompletionService* : Executor Meets *BlockingQueue*
+*CompletionService* combines the functionality of an *Executor* and a *BlockingQueue*. You can submit *Callable* tasks to it for execution and use the queue-like methods *take* and *poll* to retrieve completed results, packaged as Futures, as they become available.
+
+The implementation of *ExecutorCompletionService* is quite straightforward. The constructor creates a *BlockingQueue* to hold the completed results. Future-Task has a done method that is called when the computation completes. When a task is submitted, it is wrapped with a *QueueingFuture*, a subclass of *FutureTask* that overrides done to place the result on the BlockingQueue, as shown in Listing 6.14. The take and poll methods delegate to the BlockingQueue, blocking if results are not yet available.
+**Listing 6.14 QueueingFuture Class Used By ExecutorCompletionService**
+```java
+private class QueueingFuture<V> extends FutureTask<V> {
+     QueueingFuture(Callable<V> c) {
+          super(c)；
+     }
+     QueueingFuture(Runnable t, V r) {
+          super(t, v);
+     }
+
+     protected void done() {
+          //BlockingQueue hold the result.
+          completionQueue.add(this);
+     }
+}
+```
+
+### 6.3.6 Example: Page Renderer with CompletionService
+:smile:We can use a *CompletionService* to improve the performance of the page renderer in two ways:
+- shorter total runtime:
+     > Create a separate task for downloading each image and execute them in a thread pool, turing the sequential download into a parallel one: this reduces the amount of time to download all the images.
+- improved responsiveness:
+     > By fetching results from the CompletionService and rendering each image as soon as it is available, we can give the user a more dynamic and responsive user interface.
+
+
+**Listing 6.15 Using CompletionService to Render Page Elements as they become available**
+```java
+public class Renderer {
+     private final ExecutorService executor;
+
+     Renderer(ExecutorService executor) {
+          this.executor = executor;
+     }
+
+     void renderPage(CharSequence source) {
+          final List<ImageInfo> info = scanForImageInfo(source);
+          CompletionService<ImageData> completionService = new ExecutorCompletionService<>(executor);
+          for (ImageInfo imageInfo : info) {
+               completionService.submit(new Callable<>{
+                    public ImageData call() {
+                         return imageInfo.downloadImage();
+                    }
+               });
+          }
+          renderText(source);
+
+          try {
+               for (int t = 0, n = info.size(); t < n; t++) {
+                    Future<ImageData> f = completionService.take();
+                    ImageData imageData = f.get();
+                    renderImage(imageData);
+               }
+          } catch (InterruptedException e) {
+               Thread.currentThread().interrupt();
+          } catch (ExecutionException e) {
+               throw launderThrowable(e.getCause());
+          }
+     }
+}
+```
