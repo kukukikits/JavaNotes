@@ -73,6 +73,8 @@ variables and the ThreadLocal class —— but even with
 these, it is still the programmer's responsibility
 to ensure that thread-confined objects do not escape from their intended thread.
 ### 3.3.1 Ad-hoc Thread Confinement
+Ad Hoc源自于拉丁语，意思是“for this”引申为“for this purpose only”，即“为某种目的设置的，特别的”意思，即Ad hoc网络是一种有特殊用途的网络。
+
 Ad-hoc thread confinement describes when the responsibility for maintaining thread confinement falls entirely on the implementation.(也就是变量的线程封闭性的维护完全由代码实现来保障)
 
 A special case of thread confinement applies to volatile variables. It is safe to perform read-modify-write operations on shared volatile variables as long as you ensure that the volatile variable is only written from a single thread. In this case, you are confining the modification to a single thread to prevent race conditions, and the visibility guarantees for volatile variables ensure that other threads see the most up-to-date value.
@@ -768,3 +770,260 @@ public class Renderer {
      }
 }
 ```
+
+---
+
+# Chapter 7. Cancellation and shutdown
+Getting tasks and threads to stop safely, quickly, and reliably is not always easy. Java does not provide any mechanism for safely forcing a thread to stop what it is doing. Instead, it provides interruption, a cooperative mechanism that lets one thread ask another to stop what it is doing.
+
+The cooperative approach is required because we rarely want a task, thread, or service to stop immediately, since that could leave shared data structures in an inconsistent state. Instead, tasks and services can be coded so that, when requested, they clean up any work currently in progress and then terminate. This provides greater flexibility, since the task code itself is usually better able to assess the cleanup required than is the code requesting cancellation.
+
+## 7.1 Task Cancellation
+### 7.1.1 Interruption
+:warning: There is nothing in the API or language specification that ties interruption to any specific cancellation semantics, but in practice, using interruption for anything but cancellation is fragile and difficult to sustain in larger applications.
+
+Each thread has a boolean interrupted status; interrupting a thread sets its interrupted status to true. Thread contains methods for interrupting a thread and querying the interrupted status of a thread.
+
+**Interruption Methods in Thread**
+```java
+public class Thread {
+     public void interrupt(){...}
+     public boolean isInterrupted() {...}
+     
+     //返回线程状态，然后重置线程的中断状态为false. 这是唯一的可以清除线程中断状态的方法
+     public static boolean interrupted() {...}
+}
+```
+
+Blocking library methods like Thread.sleep and Object.wait try to detect when a thread has been interrupted and return early. They respond to interruption by clearing the interrupted status and throwing InterruptedException, indicating that the blocking operation completed early due to interruption. The JVM makes no guarantees on how quickly a blocking method will detect interruption, but in practice this happens reasonably quickly.
+
+If a thread is interrupted when it is not blocked, its interrupted status is set, and it is up to the activity being cancelled to poll the interrupted status to detect interruption. **:warning: In this way interruption is "sticky" if it doesn't trigger an *InterruptedException*, evidence of interruption persists until someone  deliberately clears the interrupted status.**
+
+🐵Calling interrupted does not necessarily stop the target thread from doing what it is doing; it merely delivers the message that interruption has been requested.
+
+A good way to think about interruption is that it does not actually interrupt a running thread; it just requests that the thread interrupt itself at the next convenient opportunity. (These opportunities are called cancellation points.) Some methods, such as *wait*, *sleep*, and *join*, take such requests seriously, throwing an exception when they receive an interrupt request or encounter an already set interrupt interrupt status upon entry. 
+- Well behaved methods my totally ignore such requests so long as they leave the interruption request in place so that calling code can do something with it. 
+- Poorly behaved methods **swallow**  the interrupt request, thus denying code further up the call stack the opportunity to act on it.
+
+:pencil: The static interrupted method should be used with caution, because it clears the current thread's interrupted status. If you call interrupted and it returns True, unless you are planning to swallow the interruption, you should do something with it -- either throw *InterruptedException* or restore the interrupted status by calling *interrupt* again.
+
+:pill: Interruption is usually the most sensible way to implement cancellation.
+
+### 7.1.2 Interruption Policies
+It is important to distinguish between how tasks and threads should react to interruption. A single interrupt request my have more than one desired recipient interrupting a worker thread in a thread pool can mean both "cancel the current task" and "shut down the worker thread".
+
+Tasks do not execute in threads they own; they borrow threads owned by a service such as a thread pool. Code that doesn't own the thread (for a thread pool, and code outside of the thread pool implementation) should be careful to preserve the interrupted status so that the owning code can eventually act on it, even if the "guest" code acts on the interruption as well. (If you are house-sitting for someone, you don't throw out the mail that comes while they're away. You save it and let them deal with it when they get back, even if you do read their magazines.)
+
+This is why most blocking library method simply throw *InterruptedException* in response to an interrupt. They will never execute in a thread they own, so they implement the most reasonable cancellation policy for task or library code: get out of the way as quickly as possible and communicate the interruption back to caller so that code higher up on the call stack can take further action.
+
+Whether a task interprets interruption as cancellation or takes some other action on interruption, it should take care to preserve the executing thread's interruption status. If it is not simply going to propagate *InterruptedException* to its caller,  it should restore the interruption status after catching *InterruptedException*：
+```java
+//restore the interruption status after catching InterruptedException
+Thread.currentThread().interrupt(); 
+```
+
+:pill: Because each thread has its own interruption policy, you should not interrupt a thread unless you know what interruption means to that thread.
+
+### 7.1.3 Responding to Interruption
+Two practical strategies for handling *InterruptedException*:
+- Propagate the exception (possibly after some task-specific cleanup), making your method an interruptible blocking method, too; or
+- Restore the interruption status so that code higher up on the call stack can deal with it.
+
+:key: Only code that implements a thread's interruption policy may swallow an interruption request. General-purpose task and library code should never swallow interruption requests.
+
+**Activities that do not support cancellation but still can interruptible blocking methods will have to call them in a loop, retrying when interruption is detected.** In this case, they should save the interruption status locally and restore it just before returning, as shown in Listing 7.7, rather than immediately upon catching *InterruptedException*. Setting the interrupted status too early could result in an infinite loop, because most interruptible blocking methods check the interrupted status on entry and throw *InterruptedException* immediately if it is set. (Interruptible methods usually pool for interruption before blocking or doing any significant work, so as to be responsive to interruption as possible.)
+
+**List 7.7 Non-cancelable Task that Restores Interruption before exit**
+```java
+public Task getNextTask(BlockingQueue<Task> queue) {
+     boolean interrupted = false;
+     try {
+          while (true) {
+               return queue.take();
+          } catch(InterruptedException e) {
+               interrupted = true;
+               // fall through and retry
+          }
+     } finally {
+          if (interrupted) {
+               Thread.currentThread().interrupt();
+          }
+     }
+}
+```
+
+If your code does not call interruptible blocking methods, it can still be made responsive to interruption by polling the current thread's interrupted status throughout the task code. Choosing a polling frequency is a tradeoff between efficiency and responsiveness.
+
+### 7.1.4 Example: Timed Run
+:cry: **Listing 7.8 Scheduling an Interrupt on a Borrowed Thread.** Don't do this.
+```java
+private static final ScheduledExecutorService cancelExec =  ...;
+
+public static void timedRun(Runnable r, long timeout, TimeUnit unit) {
+     final Thread taskThread = Thread.currentThread();
+     cancelExec.schedule(new Runnable() {
+          public void run() {
+               taskThread.interrupt();
+          }
+     }, timeout, unit);
+     r.run();
+}
+```
+We can't do this because:
+- it violates the rules: you should know a thread's interruption policy before interrupting it.
+- we don't know when would the task complete. If the task completes before the timeout, the cancellation task that interrupts the thread in which timedRun was called could go off after timedRun has returned to its caller.
+- We don't know if the task is responsive to interruption. If the task is not responsive to interruption, timedRun will not return until the task finishes.
+
+### 7.1.5 Cancellation Via Future
+:smiley: Listing 7.10 Cancelling a Task Using Future
+```java
+public static void timeRun(Runnable r, long timeout, TimeUnit unit) throws InterruptedException {
+     Future<?> task = taskExec.submit(r);
+     try {
+          task.get(timeout, unit);
+     } catch (TimeoutException e) {
+          // task will be cancelled below
+     } catch (ExecutionException e) {
+          // exception thrown in task; rethrow
+          throw launderThrowable(e.getCause());
+     } finally {
+          // Harmless if task already completed
+          task.cancel(true); // interrupt if running
+     }
+}
+```
+
+### 7.1.6 Dealing with Non-interruptible Blocking
+Many blocking library methods respond to interruption by returning early and throwing *InterruptedException*, which makes it easier to build tasks that are responsive to cancellation. However, not all blocking methods or blocking mechanisms are responsive to interruption; if a thread is blocked performing synchronous socket I/O or waiting to acquire an intrinsic lock, interruption has no effect other than setting the thread's interrupted status. We can sometimes convince threads blocked in non-interruptible activities to stop by means similar to interruption, but this requires greater awareness of why the thread is blocked.
+
+Synchronous socket I/O in java.io. The common form of blocking I/O in server applications is reading or writing to a socket. Unfortunately, the read and write methods in **InputStream** and **OutputStream** are not responsive to interruption, but closing the underlying socket makes any threads blocked in read or write throw a **SocketException**.
+
+Synchronous I/O in java.nio. Interrupting a thread waiting on an **InterruptibleChannel** causes it to throw **ClosedByInterruptException** and close the channel (and also causes all other threads blocked on the channel to throw **ClosedByInterruptException**). Closing an **InterruptibleChannel** causes threads blocked on channel operations to throw **AsynchronousCloseException**. Most standard Channels implement **InterruptibleChannel**.
+
+Asynchronous I/O with Selector. If a thread is blocked in Selector.select (in java.nio.channels), wakeup causes it to return prematurely by throwing a **ClosedSelectorException**.
+
+Lock acquisition. If a thread is blocked waiting for an intrinsic lock, there is nothing you can do to stop it, **short of** ensuring that it eventually acquires the lock and makes enough progress that you can get its attention some other way. However, the explicit Lock classes offer the **lockInterruptibly** method, which allows you to wait for a lock and still be responsive to interrupts.
+
+ReaderThead in Listing 7.11 shows a technique for encapsulating nonstandard cancellation. ReaderThread manages a single socket connection, reading synchronously from the socket and passing any data received to processBuffer. To facilitate terminating a user connection or shutting down the server, ReaderThread overrides interrupt to both deliver a standard interrupt and close the underlying socket; thus interrupting a ReaderThread makes it stop what it is doing whether it is blocked in read or in an interruptible blocking method.
+
+**List 7.11 Encapsulating Nonstandard Cancellation in a Thread by Overriding Interrupt**
+```java
+public class ReaderThread extends Thread {
+     private final Socket socket;
+     private final InputStream in;
+
+     public ReaderThread(Socket socket) throws IOException {
+          this.socket = socket;
+          this.in = socket.getInputStream();
+     }
+
+     public void interrupt() {
+          try {
+               socket.close();
+          } catch (IOException ignored) {}
+          finally {
+               super.interrupt();
+          }
+     }
+
+     public void run() {
+          try {
+               byte[] buf = new byte[BUFSZ];
+               while (true) {
+                    int count = in.read(buf);
+                    if(count < 0) {
+                         break;
+                    } else if (count > 0) {
+                         processBuffer(buf, count);
+                    }
+               } catch (IOException e) {
+                    // Allow thread to exit
+               }
+          }
+     }
+}
+```
+### 7.1.7 Encapsulating Nonstandard Cancellation with Newtaskfor
+CancellableTask in Listing 7.12 defines a CancellableTask interface that extends Callable and adds a cancel method and a newTask factory method for constructing a RunnableFuture. CancellingExecutor extends ThreadPoolExecutor, and overrides newTaskFor to let a CancellableTask create its own Future.
+
+**Listing 7.12 Encapsulating Nonstandard Cancellation in a Task with Newtaskfor**
+```java
+public interface CancellableTask<T> extends Callable<T> {
+     void cancel();
+     RunnableFuture<T> newTask();
+}
+
+@ThreadSafe
+public class CancellingExecutor extends ThreadPoolExecutor {
+     ...
+     protected<T> RunnableFuture<T> newTaskFor(Callable<T> callable) {
+          if (callable instanceof CancellableTask){
+               return ((CancellableTask<T>) callable).newTask();
+          } else {
+               return super.newTaskFor(callable);
+          }
+     }
+}
+
+public abstract class SocketUsingTask<T> implements CancellableTask<T> {
+     @GuardedBy("this")
+     private Socket socket;
+     protected synchronized void setSocket(Socket s) {
+          socket = s;
+     }
+
+     public synchronized void cancel() {
+          try {
+               if (socket != null) {
+                    socket.close();
+               }
+          } catch (IOException ignored){}
+     }
+
+     public RunnableFuture<T> newTask() {
+          return new FutureTask<T>(this) {
+               public boolean cancel(boolean mayInterruptIfRunning) {
+                    try {
+                         SocketUsingTask.this.cancel();
+                    } finally {
+                         return super.cancel(mayInterruptIfRunning);
+                    }
+               }
+          }
+     }
+}
+```
+
+## 7.2 Stopping a Thread-based Service
+Sensible encapsulation practices dictate that you should not manipulate a thread - interrupt it, modify its priority, etc. - unless you own it. The thread API has no formal concept of thread ownership: a thread is represented with a Thread object that can be freely shared like an other object. However, it makes sense to think of a thread as having an owner, and this is usually the class that created the thread. So a thread pool owns its worker threads, and if those threads need to be interrupted, the thread pool should take care of it.
+
+:pill: Provide lifecycle methods whenever a thread-owning service has a lifetime longer than that of the method that created it.
+
+### 7.2.2 ExecutorService Shutdown
+More sophisticated programs are likely to encapsulate an ExecutorService behind a higher-level service that provides its own lifecycle methods, such as the variant of LogService in Listing 7.16 that delegates to an ExecutorService instead of managing its own threads.
+**Listing 7.16 Logging Service that Uses an ExecutorService**
+```java
+public class LogService {
+     private final ExecutorService exec = newSingleThreadExecutor();
+     ...
+     public void start() {}
+
+     public void stop() throws InterruptedException {
+          try {
+               exec.shutdown();
+               exec.awaitTermination(TIMEOUT, UNIT);
+          } finally {
+               writer.close();
+          }
+     }
+
+     public void log(String msg) {
+          try {
+               exec.execute(new WriteTask(msg));
+          } catch (RejectedExecutionException ignored) {
+
+          }
+     }
+}
+```
+
