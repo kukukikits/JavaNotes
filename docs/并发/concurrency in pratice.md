@@ -1027,3 +1027,274 @@ public class LogService {
 }
 ```
 
+### 7.2.3 Poison Pills
+Another way to convince a producer-consumer service to shut down is with a poison pill: a recognizable object placed on the queue that means "when you get this, stop." With a FIFO queue, poison pills ensure that consumers finish the work on their queue before shutting down, since any work submitted prior to submitting the poison pill will be retrieved before the pill; producers should not submit any work after putting a poison pill on the queue.
+
+### 7.2.4 Example: A One-shot Execution Service
+If a method needs to process a batch of tasks and does not return until all the tasks are finished, it can simplify service lifecycle management by using a private Executor whose lifetime is bounded by that method.(The invokeAll and invokeAny methods can often be useful in such situations.)
+
+**Listing 7.20 Using a Private Executor Whose Lifetime is Bounded by a Method Call**
+```java
+boolean checkMail(Set<String> hosts, long timeout, TimeUnit unit) throws InterruptedException {
+     ExecutorService exec = Executors.newCachedThreadPool();
+     final AtomicBoolean hasNewMail = new AtomicBoolean(false);
+     try {
+          for(String host : hosts) {
+               exec.execute(() -> {
+                    if (checkMail(host)) {
+                         hasNewMail.set(true);
+                    }
+               });
+          }
+     } finally {
+          exec.shutdown();
+          exec.awaitTermination(timeout, unit);
+     }
+     return hasNewMail.get();
+}
+```
+### 7.2.5 Limitations of shutdownnow
+There is no general way of knowing the state of the tasks in progress at shutdown time unless that tasks themselves perform some sort of checkpointing.
+
+TrackingExecutor in Listing 7.21 shows a technique for determining which tasks were in progress at shutdown time.
+
+TrackingExecutor has an unavoidable race condition that could make it yield **false positives**: tasks that are identified as cancelled but actually completed. This arises because the thread pool could be shut down between when the last instruction of the task executes and when the pool records the task as complete. This is not a problem if tasks are idempotent (if performing them twice has the same effect as performing them once), as they typically are in a web crawler. Otherwise, the application retrieving the cancelled tasks must be aware of this risk and be prepared to deal with false positives.
+
+**List 7.21 ExecutorService that Keeps Track of cancelled tasks after shutdown**
+```java
+public class TrackingExecutor extends AbstractExecutorService {
+     private final ExecutorService exec;
+     private final Set<Runnable> taskCancelledAtShutdown = Collections.synchronizedSet(new HashSet<>());
+     ...
+
+     public List<Runnable> getCancelledTasks() {
+          if(!exec.isTerminated()) {
+               throw new IllegalStateException(...);
+          }
+          return new ArrayList<>(taskCancelledAtShutdown);
+     }
+
+     public void execute(Runnable runnable) {
+          exec.execute(() -> {
+               try {
+                    runnable.run();
+               } finally {
+                    if (isShutdown()
+                    && Thread.currentThread().isInterrupted()) {
+                         taskCancelledAtShutdown.add(runnable);
+                    }
+               }
+          });
+     }
+
+     //delegate other ExecutorService methods to exec
+}
+```
+
+**List 7.22 Using TrackingExecutorService to Save unfinished tasks for later execution**
+```java
+public abstract class WebCrawler {
+     private volatile TrackingExecutor exec;
+     @GuardedBy("this")
+     private final Set<URL> urlsToCrawl = new HashSet<>();
+     ...
+
+     public synchronized void start() {
+          exec = new TrackingExecutor(Executors.newCachedThreadPool());
+          for (URL url : urlsToCrawl) {
+               submitCrawTask(url);
+          }
+          urlsToCraw.clear();
+     }
+
+     public synchronized void stop() throws InterruptedException {
+          try {
+               saveUncrawled(exec.shutdownNow());
+               if(exec.awaitTermination(TIMEOUT, UNIT)) {
+                    saveUncrawled(exec.getCancelledTasks());
+               }
+          } finally {
+               exec = null;
+          }
+     } 
+
+     protected abstract List<URL> processPage(URL url);
+
+     private void saveUncrawled(List<Runnable> uncrawled) {
+          for (Runnable task : uncrawled) {
+               urlsToCraw.add(((CrawTask) task).getPage());
+          }
+     }
+     private void submitCrawTask(URL u) {
+          exec.execute(new CrawTask(u));
+     }
+
+     private class CrawTask implements Runnable {
+          private final URL url;
+          ...
+          public void run() {
+               for (URL link : processPage(url)) {
+                    if (Thread.currentThread().isInterrupted()) {
+                         return;
+                    }
+                    submitCrawTask(link);
+               }
+          }
+
+          public URL getPage() {
+               return url;
+          }
+     }
+}
+```
+
+## 7.3 Handling Abnormal Thread Termination
+:pill: Just about any code can throw a _RuntimeException_. Whenever you call another method, you are taking a leap of faith that it will return normally or throw one of the checked exceptions its signature declares. **The less familiar you are with the code being called, the more skeptical you should be about its behavior.** Always call tasks within a try-catch block that catches unchecked exceptions, or within a try-finally block to take corrective action. 
+
+### 7.3.1 Uncaught Exception Handlers
+The Thread API also provides the _UncaughtExceptionHandler_ facility, which lets you detect when a thread dies due to an uncaught exception.
+
+When a thread exits due to an uncaught exception, the JVM reports this event to an application-provided _UncaughtExceptionHandler_; if no handler exists, the default behavior is print the stack trace to System.err.
+```java
+public interface UncaughtExceptionHandler {
+     void uncaughtException(Thread t, Throwable e);
+}
+```
+
+To set an _UncaughtExceptionHandler_ for pool threads, provide a _ThreadFactory_ to the _ThreadPoolExecutor_ constructor.
+
+Somewhat confusingly, exceptions thrown from tasks make it to the uncaught exception handler only for tasks submitted with execute; for tasks submitted with submit, any thrown exception, checked or not, is considered to be part of the task's return status. If a task submitted with submit terminates with an exception, it is rethrown by Future.get, wrapped in an _ExecutionException_.
+
+## 7.4 JVM Shutdown
+Two ways that can shut down JVM:
+1. **An orderly shutdown**
+An orderly shutdown is initiated when **the last "normal" (non-daemon) thread terminates**, someone calls **System.exit**, or by other platform-specific means (such as sending a **SIGINT** or hitting **Ctrl-C**). This is the standard and preferred way for the JVM to shut down.
+2. **Abrupt shutdown**
+JVM can also be shut down abruptly by calling **Runtime.halt** or by **killing the JVM process through the operation** system(such as sending a **SIGKILL**).
+
+### 7.4.1 Shutdown Hooks
+#### Orderly shutdown
+In an orderly shutdown:
+1. The JVM first starts all registered shutdown hooks.
+Shutdown hooks are unstarted threads that are registered with **Runtime.addShutdownHook**. The JVM makes no guarantees on the order in which shutdown hooks are started.
+2. If any **application threads** (daemon or nondaemon) are still running at shutdown time, they continue to **run concurrently with the shutdown process**.
+3. When all shutdown hooks have completed, the JVM may choose to run finalizers if **runFinalizerOnExit** is ture, and then halts.
+The JVM makes no attempt to stop or interrupt any application threads that are still running at shutdown time; they are abruptly terminated when the JVM eventually halts.
+4. If the shutdown hooks or finalizers don't complete within a certain time (_if you ask me how long does this process takes, I don't know..._ 我自己加的), then the orderly shutdown process "hangs" and the JVM must be shutdown abruptly.
+
+#### Abrupt shutdown
+In an abrupt shutdown, the JVM is not required to do anything other halt the JVM; **shutdown hooks will not run**.
+
+#### Summary
+:pill: Tips:
+1. Shutdown hooks should be thread-safel;
+2. They should not make assumptions about the state of the application (such as whether other services have shut down already or all normal threads have completed) or about why the JVM is shutting down, and must therefore be coded extremely defensively;
+3. They should exit as quickly as possible.
+
+:book: Usage scenarios:
+1. Service or application cleanup, such as **deleting temporary files** or **cleaning up resources** that are not automatically cleaned up by the OS.
+2. 停止日志服务
+3. 内存数据写到磁盘
+4. **use a single shutdown hook for all services**, rather than one for each service, and have it call a series of shutdown actions. This ensures that shutdown actions execute sequentially in a single thread, thus avoiding the possibility of race conditions or deadlock between shutdown actions.  
+
+### 7.4.2 Daemon Threads
+Two types of threads:
+1. normal threads
+2. daemon threads
+
+:book: When the JVM starts up, **all the threads it creates (such as garbage collector and other housekeeping threads) are daemon thread, exception the main thread**. When a new thread is created, it **inherits the daemon status of the thread that created it**, so by default any threads created by the main thread are also normal threads.
+
+:key: Normal threads and daemon threads differ only in what happens when they exit. **When a thread exits**, the JVM performs an inventory of running threads, and if the only threads that are left are daemon threads, it initiates an orderly shutdown. **When the JVM halts**, any remaining daemon threads are abandoned - finally blocks are not executed, stacks are not unwound - the JVM just exits.
+
+:pill: Daemon threads should be used sparingly - few processing activities can be safely abandoned at any time with on cleanup. In particular, it is dangerous to use daemon threads for tasks that might perform any sort of I/O. Daemon threads are best saved for "housekeeping" tasks, such as a background thread that periodically removes expired entries form an in-memory cache.
+
+### 7.4.3 Finalizers
+In most cases, the combination of finally blocks and explicit close methods does a better job of resource management than finalizers; the sole exception is when you need to manage objects that hold resources acquired by native methods. For these reasons and others, work hard to avoid writing or using classes with finalizers (other than the platform library classes).
+:pill: Avoid finalizers
+
+
+# Chapter 8. Applying Thread Pools
+## 8.1 Implicit Couplings Between Tasks and Execution Policies
+Types of tasks that require specific execution policies include:
+1. Dependent tasks. When you submit tasks that depend on other tasks to a thread pool, you implicitly create constraints on the execution policy that must be carefully managed to avoid liveness problems.
+2. Tasks that exploit thread confinement. Single-threaded executors make stronger promises about concurrency than do arbitrary thread pools. They guarantee that tasks are not executed concurrently. This forms an implicit coupling between the task and the execution policy - the tasks require their executor to be single-threaded. In this case, if you changed the Executor from a single-threaded one to a thread pool, thread safety could be lost.
+3. Response-time-sensitive tasks. Submitting a long-running task to a single-threaded executor, or submitting several long-running tasks to a thread pool with a small number of threads, may **impair** the responsiveness of the service managed by that Executor. 
+4. **Tasks that use ThreadLocal**. The standard Executor implementations may reap idle threads when demand is low and add new ones when demand is high, and also replace a worker thread with a fresh on if an unchecked exception is thrown from a task. **ThreadLocal makes sense to use in pool threads only if the thread-local value has a lifetime that is bounded by that of a task; Thread-Local should not be used in pool threads to communicate values between tasks**.
+5. Thread pools work best when tasks are homogeneous and independent. Mixing long-running and short-running tasks risks "clogging" the pool unless it is very large; submitting tasks that depend on other tasks risks deadlock unless the pool is unbounded.
+
+:pill: Some tasks have characteristics that require or preclude a specific execution policy. **Tasks that depend on other tasks require that the thread pool be large enough** that tasks are never queued or rejected; tasks that exploit thread confinement require sequential execution. Document these requirements so that future maintainers do not undermine safety or liveness by substituting an incompatible execution policy.
+
+### 8.1.1 Thread Starvation Deadlock(线程饥饿死锁：就是没有可用的线程了，导致死锁)
+If tasks that depend on other tasks execute in a thread pool, they can deadlock. 
+1. **In a single-threaded executor, a task that submits another task to the same executor and waits for its results will always deadlock**. 
+The second task sits on the work queue until the first task completes, but the first will not complete because it is waiting for the result of the second task.
+2. In a larger thread pool, if all threads are executing tasks that are blocked waiting for other tasks still on the work queue. This is called **thread starvation deadlock**, and can occur whenever a pool task initiates an unbounded blocking wait for some resource or condition that can succeed only through the action of another pool task, such waiting for the return value or side effect of another task, unless you can guarantee that the pool is large enough.
+
+:book: Whenever you submit to an Executor tasks that are not independent, be aware of the possibility of thread starvation deadlock, and document any pool sizing or configuration constraints in the code or configuration file where the Executor is configured.
+
+ThreadDeadLock in Listing 8.1 illustrates thread starvation deadlock.
+
+:cry:**List 8.1 Tak that Deadlocks in a Single-threaded Executor. Don't do this**
+```java
+public class ThreadDeadLock {
+     ExecutorService exec = Executors.newSingleThreadExecutor();
+
+     public class RenderPageTask implements Callable<String> {
+          public String call() throws Exception {
+               Future<String> header, footer;
+               header = exec.submit(new LoadFileTask("header.html"));
+               footer = exec.submit(new LoadFileTask("footer.html"));
+               String page = renderBody();
+               //will deadlock - task waiting for result of subtask
+               return header.get() + page + footer.get();
+          }
+     }
+}
+```
+
+**In addition to** any explicit bounds on the size of a thread pool, there may also be implicit limits because of constraints on other resources. If your application uses a JDBC connection pool with ten connections and each task needs a database connection, it is as if your thread pool only has ten threads because tasks in excess of ten will block waiting for a connection.
+
+### 8.1.2 Long-running Tasks
+Thread pools can have responsiveness problems if tasks can block for extended periods of time, even if deadlock is not a possibility. One technique that can mitigate the ill effects of long-running tasks is for tasks to use timed resource waits instead of unbounded waits. 
+
+## 8.2 Sizing Thread Pools
+The ideal size for a thread pool depends on the types of tasks that will be submitted and the characteristics of the deployment system. Thread pool sizes should rarely be hard-coded; instead pool sizes should be **2).provided by a configuration mechanism** or **1).computed dynamically by consulting Runtime.availableProcessors**.
+
+Sizing thread pools is not an exact science, but fortunately you need only avoid the extremes of "too big" and "too small". If a thread pool is too big, then threads compete for scarce CPU and memory resources, resulting in higher memory usage and possible resource exhaustion. If it is too small, throughput suffers as processors go unused despite available work.
+
+To size a thread pool properly, 
+- you need to understand your computing environment,
+- your resource budget,
+- and the nature of your tasks.
+- How many processors does the deployment system have?
+- How much memory?
+- Do tasks perform mostly computation, I/O, or some combination?
+- Do they require a scarce resource, such as a JDBC connection?
+
+If you have different categories of tasks with very different behaviors, consider using multiple thread pools so each can be tuned according to its workload.
+
+- :pill: **For compute-intensive tasks**, an $N_{cpu}$-processor system usually achieves optimum utilization with  **a thread pool of $N_{cpu} + 1$ threads**. (Even compute-intensive threads occasionally take a page fault or pause for some other reason, so an "extra" runnable thread prevents CPU cycles from going unused when this happens.)
+
+- :pill: **For tasks that also include I/O or other blocking operations**, you want a larger pool, since not all of the threads will be schedulable at all times. In order to size the pool properly, you must **estimate the ratio of waiting time to compute time for your tasks**; this estimate need not be precise and can be obtained through pro-filing or instrumentation. **Alternatively, the size of the thread pool can be tuned by running the application using several different pool sizes under a benchmark load and observing the level of CPU utilization.**
+
+### Given these definitions:
+> $N_{cpu} = $ number of CPUs
+> $U_{cpu} = $ target CPU utilization, 0 <= $U_{cpu}$ <= 1
+> $W/C = $ ratio of wait time to compute time
+
+the optimal pool size for keeping the processors at the desired utilization is:
+> $N_{threads} = N_{cpu} * U_{cpu} * (1 + W/C)$
+
+You can determine the number of CPUs using _Runtime_:
+```java
+int N_cpus = Runtime.getRuntime().availableProcessors();
+```
+
+Of course, CPU cycles are not the only resource you might want to manage using thread pools. Other resources that can contribute to sizing constraints are memory, file handles, socket handles, and database connections. Calculating pool size constraints for these types of resources is easier: **just add up how much of the resource each task requires and divide that into the total quantity available. The result will be an upper bound on the pool size.**
+
+> Here is an example:
+> If we have 10GB of memory available, and each thread requires at most 1GB of memory. We can have this equation:
+> $$number\ of\ tasks = \frac{Total\ Quantity\ Available}{Resources\ Per\ Task} = \frac{10GB}{1GB} = 10$$
+> As a result, we can only have at most 10 threads.
+
+When tasks require a pooled resource such as database connections, thread pool size and resource pool size affect each other. If each task requires a connection, the effective size of the thread pool is limited by the connection pool size. Similarly, when the only consumers of connections are pool tasks, the effective size of the connection pool is limited by the thread pool size.
