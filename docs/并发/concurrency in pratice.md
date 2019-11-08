@@ -1298,3 +1298,212 @@ Of course, CPU cycles are not the only resource you might want to manage using t
 > As a result, we can only have at most 10 threads.
 
 When tasks require a pooled resource such as database connections, thread pool size and resource pool size affect each other. If each task requires a connection, the effective size of the thread pool is limited by the connection pool size. Similarly, when the only consumers of connections are pool tasks, the effective size of the connection pool is limited by the thread pool size.
+
+### 8.3.1 Thread Creation and Teardown
+:one: **core pool size**: is the target size; the implementation of thread pool attempts to maintain the pool at this size even when there are no tasks to execute[<sup>1</sup>](#8.3.1.1), and will not create more threads than this unless the work queue is full [<sup>2</sup>](#8.3.1.2).
+
+:two: **Maximum pool size** is the upper bound on how many pool threads can be active at once.
+
+:three: **keep-alive time**: A thread that has been idle for longer than the keep-alive time becomes a candidate for reaping and can be terminated if the current pool size exceeds the core size.
+
+><span id="8.3.1.1" style='color:blue;'>[1]</span> When a ThreadPoolExecutor is initially created, the core threads are not started immediately but instead as tasks are submitted, unless you call prestartAllCoreThreads.
+><span id="8.3.1.2" style='color:blue;'>[2]</span> Developers are sometimes tempted to set the core size to zero so that the worker threads will eventually be torn down and therefore won't prevent the JVM from exiting, but this can cause some strange-seeming behavior in thread pools that don't use a **SynchronousQueue** for their work queue (as newCachedThreadPool does). If the pool is already at the core size, **ThreadPoolExecutor** creates a new thread only if the work queue is full. So tasks submitted to a thread pool with a work queue that has any capacity and a core size of zero will not execute until the queue fills up, which is usually not what is desired. In Java 6, **allowCoreThreadTimeOut** allows you to request that all pool threads be able to time out; enable this feature with a core size of zero if you want a bounded thread pool with a bounded work queue but still have all the threads torn down when there is no work to do.
+
+### 8.3.2 Managing Queued Tasks
+:sheep: The newCachedThreadPool factory is a good default choice for an Executor, providing better queuing performance than a fixed thread pool [<sup>[1]</sup>](#8.3.2.1). A fixed size thread pool is a good choice when you need to limit the number of concurrent tasks for resource-management purposes, as in a server application that accepts requests from network clients and would otherwise be vulnerable to overload.
+
+> <span id='8.3.2.1' style='color:blue;'>[1]</span>: This performance difference comes from the use of SynchronousQueue instead of LinkedBlocking-Queue. SynchronousQueue was replaced in Java 6 with a new non-blocking algorithm that improved throughput in Executor benchmarks by a factor of three over the Java 5.0 SynchronousQueue implementation.
+
+Bounding either the thread pool or the work queue is suitable only when tasks are independent. With tasks that depend on other tasks, bounded thread pools or queues can cause thread starvation deadlock; instead, use an unbounded pool configuration like newCachedThreadPool.[<sup>[2]</sup>](#8.3.2.2)
+
+> <span id='8.3.2.2' style='color:blue'>[2]</span>: An alternative configuration for tasks that submit other tasks and wait for their results is to use a bounded thread pool, a SynchronousQueue as the work queue, and the caller-runs saturation policy.
+
+
+### 8.3.3 Saturation Policies 
+When a bounded work queue fills up, the saturation policy comes into play. The saturation policy for a ThreadPoolExecutor can be modified by calling _setRejectedExecutionHandler_. (The saturation policy is also used when a task is submitted to an Executor that has been shut down.) Several implementations of _RejectedExecutionHandler_ are provided, each implementing a different saturation policy: **AbortPolicy**, **CallerRunsPolicy**, **DiscardPolicy**, and **DiscardOldestPolicy**.
+
+- The default policy, abort, causes execute to throw the unchecked Rejected-ExecutionException;
+- The discard policy silently discards the newly submitted task if it cannot be queued for execution;
+- The discard-oldest policy discards the task that would otherwise be executed next and tries to resubmit the new task. (If the work queue is a priority queue, this discards the highest-priority element, so the combination of a discard-oldest saturation policy and a priority queue is not a good one.)
+- The caller-runs policy implements a form of throttling that neither discards tasks nor throws an exception, but instead tries to slow down the flow of new tasks by pushing some of the work back to the caller. It executes the newly submitted task not in a pool thread, but in the thread that calls execute.
+
+**There is no predefined saturation policy to make execute block when the work queue is full**. However, the same effect can be accomplished by using a Semaphore to bound the task injection rate, as shown in BoundedExecutor in Listing 8.4. In such an approach, use an unbounded queue (there's no reason to bound both the queue size ant the injection rate) and set the bound on the semaphore to be equal to the pool size plus the number of queued tasks you want to allow, since the semaphore is bounding the number of tasks both currently executing and awaiting execution.
+
+**Listing 8.4 Using a Semaphore to Throttle Task Submission**
+```java
+@ThreadSafe
+public class BoundedExecutor {
+     private final Executor exec;
+     private final Semaphore semaphore;
+
+     public BoundedExecutor(Executor exec, int bound) {
+          this.exec = exec;
+          this.semaphore = new Semaphore(bound);
+     }
+
+     public void submitTask(Runnable command) {
+          semaphore.acquire();
+          try {
+               exec.execute(() -> {
+                    try {
+                         command.run();
+                    } finally {
+                         semaphore.release();
+                    }
+               })
+          } catch (RejectedExecutionException e) {
+               semaphore.release();
+          }
+     }
+}
+```
+
+### 8.3.4 Thread Factories
+Whenever a thread pool needs to create a thread, it does so through a thread factory (see Listing 8.5). The default thread factory creates a new, nondaemon thread with no special configuration. Specifying a thread factory allows you to customize the configuration of pool threads. ThreadFactory has a single method, newThread, that is called whenever a thread pool needs to create a new thread.
+
+**Listing 8.5 ThreadFactory Interface**
+```java
+public interface ThreadFactory {
+     Thread newThread(Runnable r);
+}
+```
+
+If your application takes advantage of security policies to grant permissions to particular codebases, you may want to use the **PrivilegedThreadFactory** factory method in Executors to construct your thread factory. It creates pool thread that have the same permissions, **AccessControlContext**, and **contextClassLoader** as the thread creating the **privilegedThreadFactory**. Otherwise, threads created by the thread pool inherit permissions from whatever client happens to be calling execute or submit ath the time a new thread is needed, which could cause confusing security-related exceptions.
+
+### 8.3.5 Customizing ThreadPoolExecutor After Construction
+- Most of the options passed to the ThreadPoolExecutor constructors can also be modified after construction via setters (such as the core thread pool size, maximum thread pool size, keep-alive time, thread factory, and rejected execution handler).
+- If you will be exposing an ExecutorService to code you don't trust not to modify it, you can wrap it by using Executors' unconfigurableExecutorService method which returns an unconfigurable ExecutorService instance.
+
+## 8.4 Extending ThreadPoolExecutor
+Hooks that ThreadPoolExecutor provided for subclassed to override:
+- protected void beforeExecute(Thread t, Runnable r) { }
+- protected void afterExecute(Runnable r, Throwable t) { }
+- protected void terminated() { }
+
+## 8.5 Parallelizing Recursive Algorithms
+
+If we have a loop whose iterations are independent and we don't need to wait for all of them to complete before proceeding, we can use an Executor to transform a sequential loop into a parallel one, as shown in processSequentially and processInParallel in Listing 8.10
+**Listing 8.10 Transforming Sequential Execution into Parallel Execution**
+```java
+void processSequentially(List<Element> elements) {
+     for (Element e : elements) {
+          process(e);
+     }
+}
+
+void processInParallel(Executor exec, List<Element> elements) {
+     for (final Element t : elements) {
+          exec.execute(() -> {
+               process(e);
+          });
+     }
+}
+```
+
+:pill: Sequential loop iterations are suitable for parallelization when each iteration is independent of the others and the work done in each iteration of the loop body is significant enough to offset the cost of managing a new task.
+
+Loop parallelization can also be applied to some recursive designs; there are often sequential loops within the recursive algorithm that can be parallelized in the same manner as Listing 8.10. The easier case is when each iteration does not require the results of the recursive iterations it invokes. For example, sequentialRecursive in List 8.11 does a depth-first traversal of a tree, performing a calculation on each node and placing the result in a collection. The transformed version, parallelRecursive, also does a depth-first traversal, but instead of computing the result as each node is visited, it submits a task to compute the node result.
+
+**Listing 8.11 Transforming Sequential Tail-recursion into Parallelized Recursion**
+```java
+public <T> void sequentialRecursive(List<Node<T>> nodes, Collection<T> results) {
+     for (Node<T> n : nodes) {
+          results.add(n.compute());
+          sequentialRecursive(n.getChildren(), results);
+     }
+}
+
+public <T> void parallelRecursive(final Executor exec, List<Node<T>> nodes, final Collection<T> results) {
+     for (final Node<T> n : nodes) {
+          exec.execute(() -> {
+               results.add(n.compete());
+          });
+          parallelRecursive(exec, n.getChildren(), results);
+     }
+}
+```
+
+When parallelRecursive returns, each node in the tree has been visited (the traversal is still sequential: only the calls to compute are executed in parallel) and the computation for each node has been queued to the Executor. Callers of parallelRecursive can wait for all the results by creating an Executor specific to the traversal and using _shutdown_ and _awaitTermination_, as shown in Listing 8.12
+
+Listing 8.12 Waiting for Results to be Calculated in Parallel.
+```java
+public <T> Collection<T> getParallelResults(List<Node<T>> nodes) throws InterruptedException {
+     ExecutorService exec = Executors.newCachedThreadPool();
+     Queue<T> resultQueue = new ConcurrentLinkedQueue<T>();
+     parallelRecursive(exec, nodes, resultQueue);
+     exec.shutdown();
+     exec.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);
+     return resultQueue;
+}
+```
+
+:question: Is it a good practice for waiting results by creating a dedicated Executor and using shutdown and awaitTermination? It depends.
+
+### 8.5.1 Example: A Puzzle Framework
+
+**Listing 8.13 Abstraction for Puzzles Like the "Sliding Blocks Puzzle".**
+```java
+public interface Puzzle<P, M> {
+     P initialPosition();
+     boolean isGoal(P position);
+     Set<M> legalMoves(P position);
+     P move(P position, M move);
+}
+```
+
+**Listing 8.14 Link Node for the Puzzle Solver Framework**
+```java
+@Immutable
+static class Node<P, M> {
+     final P pos;
+     final M move;
+     final Node<P, M> prev;
+     Node(P pos, M move, Node<P, M> prev){...}
+
+     List<M> asMoveList() {
+          List<M> solution = new LinkedList<M>();
+          for (Node<P, M> n = this; n.move != null; n = n.prev) {
+               solution.add(0, n.move);
+          }
+          return solution;
+     }
+}
+```
+
+**Listing 8.15 Sequential Puzzle Solver**
+```java
+public class SequentialPuzzleSolver<P, M> {
+     private final Puzzle<P, M> puzzle;
+     private final Set<P> seen = new HashSet<>();
+
+     public SequentialPuzzleSolver(Puzzle<P, M> puzzle) {
+          this.puzzle = puzzle;
+     }
+
+     public List<M> solve() {
+          P pos = puzzle.initialPosition();
+          return search(new Node<P, M>(pos, null, null));
+     }
+
+     private List<M> search(Node<P, M> node) {
+          if (!seen.contains(node.pos)) {
+               seen.add(node.pos);
+               if(puzzle.isGoal(node.pos)) {
+                    return node.asMoveList();
+               }
+
+               for (M move : puzzle.legalMoves(node.pos)) {
+                    P pos = puzzle.move(node.pos, move);
+                    Node<P, M> child = new Node<P, M>(pos, move, node);
+                    List<M> result = search(child);
+                    if(result != null) {
+                         return result;
+                    }
+               }
+          }
+          return null;
+     }
+
+     static class Node<P, M> { /*Listing 8.14 */}
+}
+```
