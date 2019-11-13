@@ -1973,3 +1973,245 @@ public class WorkThread extends Thread {
      }
 }
 ```
+
+### 11.2.1 Example: Serialization Hidden in Frameworks
+Amdahl's law quantifies the possible speedup when more computing resources are available, if we can accurately estimate the fraction of execution that is serialized. Although measuring serialization directly can be difficult, Amdahl's law can still be useful without such measurement.
+
+When evaluating an algorithm, thinking "in the limit" about what would happen with hundreds or thousands of processors can offer some insight into where scaling limits might appear. For example, Sections 11.4.2 and 11.4.3 discuss two techniques for reducing lock granularity: lock splitting (splitting one lock into two) and lock striping (splitting one lock into many). Looking at them through the lens of Amdahl's law, we see that splitting a lock in two does not get us very far towards exploiting many processors, but lock striping seems much more promising because the size of the stripe set can be increased as processor count increases. (Of course, performance optimizations should always be considered in light of actual performance requirements; in some cases, splitting a lock in two may be enough to meet the requirements.)
+
+## 11.3 Costs Introduced by Threads
+Scheduling and interthread coordination have performance costs; for threads to offer a performance improvement, the performance benefits of parallelization must outweigh the costs introduced by concurrency.
+
+### 11.3.1 Context Switching
+If the main thread is the only schedulable thread, it will almost never be scheduled out. On the other hand, if there are more runnable threads than CPUs, **eventually the OS will preempt one thread so that another can use the CPU.（没懂这句话的意思）** This causes a context switch, which requires saving the execution context of the currently running thread and restoring the execution context of the newly scheduled thread.
+
+Context switches are not free; **1). thread scheduling requires manipulating shared data structures in the OS and JVM**. The OS and JVM use the same CPUs your program does; more CPU time spent in JVM and OS code means less is available for your program. But OS and JVM activity is not the only cost of context switches. When a new thread switched in, the data it needs is unlikely to be in the local processor cache, so **2). a context switch causes a flurry of cache misses**, and thus threads run a little more slowly when they are first scheduled. This is one of the reasons that schedulers give each runnable thread a certain minimum time quantum even when many other threads are waiting: it amortizes the cost of the context switch and its consequences over more uninterrupted execution time, improving overall throughput (at some cost to responsiveness).
+
+When a thread blocks because it is waiting for a contended lock, the JVM usually suspends the thread and allows it to be switched out. If threads block frequently, they will be unable to use their full scheduling quantum. A program that does more blocking (blocking I/O, waiting for contended locks, or waiting on condition variables) incurs more context switchces than one that is CPU-bound, increasing scheduling overhead and reducing throughput. (Non-blocking algorithms can also help reduce context switches; see Chapter 15)
+
+### 11.3.2 Memory Synchronization
+The performance cost of synchronization comes from several sources. The visibility guarantees provided by:
+- synchronized
+- and volatile
+
+many entail using special instructions called  memory barriers that can:
+- flush or invalidate caches,
+- flush hardware write buffers,
+- and stall execution pipelines.
+
+Memory barriers may also have indirect performance consequences because they inhibit other compiler optimizations; most operations cannot be reordered with memory barriers.
+ 
+When assessing the performance impact of synchronization, it is important to distinguish between contended and uncontended synchronization. The synchronized mechanism is optimized for the uncontended case (volatile is always uncontended), and at this writing, the performance cost of a "fast-path" uncontended synchronization ranges from 20 to 250 clock cycles for most systems. While this is certainly not zero, the effect of needed, uncontended synchronization is rarely significant in overall application performance, and the alternative involves compromising safety and potentially signing yourself (or your successor) up for some very painful bug hunting later.
+
+> The JVM has separate code paths for contended ("slow path") and uncontended ("fast path") lock acquisition.
+
+Modern JVMs can reduce the cost of incidental synchronization by optimizing away locking that can be proven never to contend. If a lock object is accessible only to the current thread, the JVM is permitted to optimize away a lock acquisition because there is no way another thread could synchronize on the same lock. For example, the lock acquisition in Listing 11.2 can always be eliminated by the JVM.
+
+:cry:**Listing 11.2 Synchronization that has No Effect. Don't do this**
+```java
+synchronized(new Object()) {
+     //do something
+}
+```
+
+More sophisticated JVMs can use escape anslysis to idenfity when a local object reference is never published to the heap and is therefore thread-local. In getStoogeNames in Listing 11.3, the only reference to the List is the local variable stooges, and stack-confined variables are automatically thread-local. A naive execution of getStoogeNames would acquire and release the lock on the Vector four times, once for each call to add or toString. However, a smart runtime compiler can inline these calls and then see that stooges and its internal state never escape, and therefore that all four lock acquisitions can be eliminated.[<sup>[1]</sup>](#11.3.2.1)
+
+> <span id ='11.3.2.1'>[1]</span>: This compiler optimization, called lock elision, is performed by the IBM JVM and is expected in HotSpot as of Java 7.
+
+**Listing 11.3 Candidate for Lock Elision**
+```java
+public String getStoogeNames() {
+     List<String> stooges = new Vector<>();
+     stooges.add("Moe");
+     stooges.add("Larry")；
+     stooges.add("Curly");
+     return stooges.toString();
+}
+```
+
+Even without escape analysis, compilers can also perform lock coarsening, the merging of adjacent synchronized blocks using the same lock. For getStoogeNames, a JVM that performs lock coarsening might combine the three calls to add and the call to toString into a single lock acquisition and release, using heuristics on the relative cost of synchronization versus the instructions inside the synchronized block. [<sup>[2]</sup>](#11.3.2.2) Not only does this reduce the synchronization overhead, but it also gives the optimizer a much larger block to work with, likely enabling other optimizations.
+
+> <span id='11.3.2'>[2]</span>: A smart dynamic compilier can figure out that this methods always return the same string, and after the first execution recompile getStoogeNames to simply return the value returned by the first execution.
+
+:snowflake: Don't worry excessively about the cost of uncontended synchroniztion. The basic mechanism is already quite fast, and JVMs can perform additional optimizations that further reduce or eliminate the cost. Instead, focus optimization efforts or areas where lock contention actually occurs.
+
+Synchronization by one thread can also affect the performance of other threads. Synchronization creates traffic on the shared memory bus; this bus has a limited bandwidth and is shared across all processors. If thread must compete for synchronization bandwidth, all threads using synchronization will suffer.[<sup>[3]</sup>](#11.3.2.3)
+
+> <span id='11.3.2.3'>[3]</span>: This aspect is sometimes used to argue against the use of non-blocking algorithms without some sort of backoff, because under heavy contention, non-blocking algorithms generate more synchronization traffic than lock-based ones. See Chapter 15.
+
+### 11.3.3 Blocking 
+Uncontended synchronization can be handled entirely within the JVM; contended synchronization may require OS activity, which adds to the cost. When locking is contended, the losing thread(s) must block. The JVM can implement blocking either via **spin-waiting** (repeatedly trying to acquire the lock until it succeeds) or by suspending the blocked thread through the operating system. Which is more efficient depends on the relationship between context switch overhead and the time until the lock becomes available; spin-waiting is preferable for short waits and suspension is preferable for long waits. Some JVMs choose between the two adaptively based on profiling data of past wait times, but most just suspend threads waiting for a lock.
+
+**Suspending a thread** because it could not get a lock, or because it blocked on a condition wait or blocking I/O operation, **entails two additional context switches and all the attendant OS and cache activity**:
+- the locked thread is switched out before its quantum has expired, 
+- and is then switched back in later after the lock or other resource becomes available.
+
+Blocking due to lock contention also has a cost for the thread holding the lock: 
+- when it releases the lock, it must then ask the OS to resume the blocked thread.
+
+## 11.4 Reducing lock Contention
+- Serialization hurts scalability
+- Context switches hurt performance
+- Contended locking causes both, so reducing lock contention can imporve both performance and scalability.
+- Persistent contention for a lock limits scalability
+
+:warning: The principal threat to scalability in concurrent applications is the exclusive resource lock.
+
+Two factors infulence the likelihood of contention for a lock:
+- how often that lock is requested
+- and how long it is held once acquired[<sup>[1]</sup>](#11.4.1)
+
+If the product of these factors is sufficiently small, then most attempts to acquire the lock will be uncontended, and lock contention will not pose a significient scalability **impediment**. If, however, the lock is in sufficiently high demand, threads will block waiting for it; in the extreme case, processors will sit idle even though there is plenty of work to do.
+
+> <span id='11.4.1'>[1]</span>: This is a corollary of Little's law, a result form queuing theory that says "the average number of customers in a stable system is equal to their average arrival rate multiplied by their average time in the system". (Little, 1961)
+
+<a style='font-size:35px;'>:gorilla:</a>There are three ways to reduce lock contention:
+- Reduce the duration for which locks are held;
+- Reduce the frequency with which locks are requested; or
+- Replace exclusive locks with coordination mechanisms that permit greater concurrency.
+
+### 11.4.1 Narrowing Lock Scope ("Get in, Get Out")
+An effective way to reduce the likelihood of contention is to hold locks as briefly as possible. This can be done by moving code that doesn't require the lock out of synchronized blocks, especially for expensive operations and potentially blocking operations such as I/O.
+
+**Listing 11.5 Reducing Lock Duration**
+```java
+@ThreadSafe
+public class BetterAttributeStore{
+     @GuardedBy("this")
+     private final Map<String, String> attributes = new HashMap<>();
+
+     public boolean userLocationMatches(String name, String regexp) {
+          String key = "Users." + name + ".location";
+          String location;
+          synchronized(this) {
+               location = attributes.get(key);
+          }
+          if(location = null) {
+               return false;
+          }else {
+               return Parttern.matches(regexp, location);
+          }
+     }
+}
+```
+Reducing the scope of the lock reduces the number of instructions that are executed with the lock held. By Amdahl's law, this removes an impediment to scalability because the amount of serialized code is reduced.
+
+While shrinking synchronized blocks can improve scalability, a synchronized block can be too small operations that need to be atomic (such updating multiple variables that participate in a invariant) must be contained in a single synchronized block. And because the cost of synchronization is nonzero, breaking one synchronized block into multiple synchronized blocks (correctness permitting) at some point becomes counterproductive in terms of performance.[<sup>[2]</sup>](#11.4.1.1) The ideal balance is of course platform-dependent, but in practice it makes sense to worry about the size of a synchronized block only when you can move "substantial" computation or blocking operations out of it.
+
+> <span id='11.4.1.1'>[2]</span>: If the JVM performs lock coarsening, it may undo the splitting of synchronized blocks anyway.
+
+### 11.4.2 Reducing Lock Granularity
+The other way to reduce the fraction of time that a lock is held (and therefore the likelihood that it will be contended) is to have threads ask for it less often. This can be accomplished by lock splitting and lock striping, which involve using separate locks to guard multiple independent state variables previously guarded by a single lock. These techniques reduce the granularity at which locking occurs, potentially allowing greater scalability but using more locks also increases the risk of deadlock.
+
+🍖If a lock guards more than one idenpendent state variable, you may be able to improve scalability by splitting it into multiple locks that each guard different variables. This results in each lock being requested less often.
+**Listing 11.7 ServerStatus Refactored to Use Split Locks**
+```java
+@ThreadSafe
+public class ServerStatus{
+     @GuardedBy("users")
+     public final Set<String> users;
+     @GuardedBy("queries")
+     public final Set<String> queries;
+     ...
+     public void addUser(String u) {
+          synchronized(users) {
+               users.add(u);
+          }
+     }
+
+     public void addQuery(String q) {
+          synchronized (queries) {
+               queries.add(q);
+          }
+     }
+}
+```
+
+### 11.4.3 Lock Striping
+Splitting a heavily contended lock into two is likely result in two heavily contended locks. While this will produce a small scalability improvement by enabling two threads to execute concurrently instead of one, it still does not dramatically improve prospects for concurrency on a system with many processors. The lock splitting example in the **ServerStatus** classes does not offer any obvious opportunity for splitting the locks further.
+
+Lock splitting can sometimes be extended to partition locking on a set of independent objects, in which case it is called **lock striping(分段锁）**.
+One of the downsides of lock striping is that locking the collection for exclusive access is more difficult and costly than with a single lock. Usually an operation can be performed by acquiring at most on lock, but occasionally you need to lock the entire collection, as when ConcurrentHashMap(Java 1.7版本) needs to expand the map and rehash the values into a larger set of buckets. This is typically done by acquiring all of the locks in the stripe set.[<sup>[1]</sup>](#11.4.3.1)
+
+> <span id='11.4.3.1'>[1]</span>: The only way to acquire an arbitrary set of intrinsic locks is via recursion
+
+**Listing 11.8 Hash-based Map Using Lock Striping**
+```java
+@ThreadSafe
+public class StripedMap{
+     //Synchronization policy: buckets[n] guarded by locks[n%N_LOCKS]
+     private static final int N_LOCKS = 16;
+     private final Node[] buckets;
+     private final Object[] locks;
+     private static class Node{...}
+
+     public StripedMap(int numBuckets) {
+          buckets = new Node[numBuckets];
+          locks = new Object[N_LOCKS];
+          for (int i = 0; i < N_LOCKS; i++) {
+               locks[i] = new Object();
+          }
+     }
+
+     private final int hash(Object key) {
+          return Math.abs(key.hashCode() % buckets.length);
+     }
+
+     public Object get(Object key) {
+          int hash = hash(key);
+          synchronized(locks[hash % N_LOCKS]) {
+               for (Node m = buckets[hash]; m != null; m = m.next) {
+                    if(m.key.equals(key)) {
+                         return m.value;
+                    }
+               }
+          }
+          return null;
+     }
+
+     public void clear() {
+          for(int i =0; i < buckets.length; i++) {
+               synchronized(locks[i % N_LOCKS]) {
+                    buckets[i] = null;
+               }
+          }
+     }
+     ...
+}
+```
+
+### 11.4.4 Avoiding Hot Fields
+Lock splitting and lock striping can improve scalability because they enable different threads to operate on different data (or different portions of the same data structure) without interfering with each other. A program that would benefit from lock splitting necessarily exhibits contention for a lock more often than for the data guarded by that lock.(受益于锁分割的程序必然会比受锁保护的数据更频繁地出现对锁的竞争。) If a lock guards two independent variables X and Y, and thread A wants to access X while B wants to access Y, then the two threads are not contending for any data, even though they are contending for a lock.
+
+Lock granularity cannot be reduced when there are variables that are required for every operation. This is yet another area where raw performance and scalability are often **at odds with each other;** common optimizations such as caching frequently computed values can introduce "hot fields" that limit scalability.
+
+If you were implementing **HashMap**, you would have a choice of how _size_ computes the number of entries in the Map. The simplest approach is to count the number of entries every time it is called. A common optimization is to update a separate counter as entries are added or removed; this slightly increases the cost of a put or remove operation to keep the counter up-to-date, but reduces the cost of the _size_ operation from O(n) to O(1).
+
+Keeping a separate count to speed up operations like _size_ and _isEmpty_ works fine for a single-threaded or fully synchronized implementation, but makes it much harder to improve the scalability of the implementation because every operation that modifies the map must now update the shared counter. Even if you use lock striping for the hash chains, synchronizing access to the counter reintroduces the scalability problems of exclusive locking. What looked like a performance optimization - caching the results of the size operation - has turned into a scalability liability. In this case, the counter is called a hot field because every mutative operation needs to access it.
+
+ConcurrentHashMap(1.7) avoids this problem by having _size_ enumerate the stripes and add up the number of elements in each stripe, instead of maintaining a global count. To avoid enumerating every element, ConcurrentHashMap maintains a separate count field for each stripe, also guarded by the stripe lock.
+
+### 11.4.5 Alternatives to Exclusive Locks
+**A third technique for mitigating the effect of lock contention is to forego the use of exclusive locks in favor of a more concurrency-friendly means of managing shared states.** These include:
+- using the concurrent collections,
+- read-write locks,
+- immutable objects (for read-only data structures, immutability can eliminate the need for locking entirely)
+- and atomic variables.
+
+:pill: Changing your algorithm to have fewer hot fields might improve scalability even more - atomic variables reduce the cost of updating hot fields, but they don't eliminate it.
+
+### 11.4.6 Monitoring CPU Utilization
+When testing for scalability, the goal is usually to keep the processors fully utilized. Tools like **vmstat** and **mpstat** on Unix systems or **perfmon** on Windows systems can tell you just how "hot" the processors are running.
+
+:dog:If the CPUs are asymmetrically utilized (some CPUs are running hot but others are not), your first goal should be to find increased parallelism in your program. Asymmetric utilization indicates that most of the computation is going on in a small set of threads, and your application will not be able to take advantage of additional processors.
+
+:chestnut: If the CPUs are not fully utilized, you need to figure out why. There are several likely causes:
+1. Insufficient load. It may be that the application being tested is just not subjected to enough load. You can test for this by increasing the load and measuring changes in urilization, response time, or service time. Generating enough load to saturate an application can require substantial computer power; the problem may be that the client systems, not the system being tested, are running at capacity.
+2. I/O-bound. You can determine whether an application is disk-bound using **iostat** or **perfmon**, and whether it is bandwidth-limited by monitoring traffic levels on your network.
+3. Externally bound. If your application depends on external services such as a database or web service, the bottleneck may not be in your code. You can test for this by using a profiler or database administration tools to determine how much time is being spent waiting for answers from the external service.
+4. Lock contention. Profiling tools can tell you how much lock contention your application is experiencing and which locks are "hot". You can often get the same information without a profiler through random sampling, triggering a few thread dumps and looking for threads contending for locks. If a thread is blocked waiting for a lock, the appropriate stack frame in the thread dump indicates "waiting to lock monitor ..." Locks that are mostly uncontended rarely show up in a thread dump; a heavily contended lock will almost always have at least on thread waiting to acquire it and so will frequently appear in thread dumps.
+
+If your application is keeping the CPUs sufficiently hot, you can use monitoring tools to infer whether it would benefit from additional CPUs. A program with only four threads may be able to keep a 4-way system fully utilized, but is unlikely to see a performance boost if moved to an 9-way system since there would need to be waiting runnable threads to take advantage of the additional processors. (You may also be able to reconfigure the program to divide its workload over more threads, such as adjusting a thread pool size.) One of the columns reported by **vmstat** is the number of threads that are runnable but not currently running because a CPU is not available; if CPU utilization is high and there are always runnable threads waiting for a CPU, your application would probably benefit from more processors.
+
+### 11.4.7 Just Say No to Object Pooling
+<span style='font-size:35px'>:icecream:</span> Allocating objects is usually cheaper than synchronizing.
