@@ -570,7 +570,7 @@ public class Memorizer<A, V> implements Computable<A,V> {
 
 **Factorizing Servlet that Caches Results Using Memorizer**
 ```java 
-@ThreadSace
+@ThreadSafe
 public class Factorizer implements Servlet {
      private final Computable<BigInteger, BigInteger[]> c = new Computable<>(){
           public BigInteger[] compute(BigInteger arg) {
@@ -1178,7 +1178,7 @@ In an orderly shutdown:
 1. The JVM first starts all registered shutdown hooks.
 Shutdown hooks are unstarted threads that are registered with **Runtime.addShutdownHook**. The JVM makes no guarantees on the order in which shutdown hooks are started.
 2. If any **application threads** (daemon or nondaemon) are still running at shutdown time, they continue to **run concurrently with the shutdown process**.
-3. When all shutdown hooks have completed, the JVM may choose to run finalizers if **runFinalizerOnExit** is ture, and then halts.
+3. When all shutdown hooks have completed, the JVM may choose to run finalizers if **runFinalizerOnExit** is true, and then halts.
 The JVM makes no attempt to stop or interrupt any application threads that are still running at shutdown time; they are abruptly terminated when the JVM eventually halts.
 4. If the shutdown hooks or finalizers don't complete within a certain time (_if you ask me how long does this process takes, I don't know..._ 我自己加的), then the orderly shutdown process "hangs" and the JVM must be shutdown abruptly.
 
@@ -1187,7 +1187,7 @@ In an abrupt shutdown, the JVM is not required to do anything other halt the JVM
 
 #### Summary
 :pill: Tips:
-1. Shutdown hooks should be thread-safel;
+1. Shutdown hooks should be thread-safe;
 2. They should not make assumptions about the state of the application (such as whether other services have shut down already or all normal threads have completed) or about why the JVM is shutting down, and must therefore be coded extremely defensively;
 3. They should exit as quickly as possible.
 
@@ -1368,7 +1368,7 @@ public interface ThreadFactory {
 }
 ```
 
-If your application takes advantage of security policies to grant permissions to particular codebases, you may want to use the **PrivilegedThreadFactory** factory method in Executors to construct your thread factory. It creates pool thread that have the same permissions, **AccessControlContext**, and **contextClassLoader** as the thread creating the **privilegedThreadFactory**. Otherwise, threads created by the thread pool inherit permissions from whatever client happens to be calling execute or submit ath the time a new thread is needed, which could cause confusing security-related exceptions.
+If your application takes advantage of security policies to grant permissions to particular code bases, you may want to use the **PrivilegedThreadFactory** factory method in Executors to construct your thread factory. It creates pool thread that have the same permissions, **AccessControlContext**, and **contextClassLoader** as the thread creating the **privilegedThreadFactory**. Otherwise, threads created by the thread pool inherit permissions from whatever client happens to be calling execute or submit ath the time a new thread is needed, which could cause confusing security-related exceptions.
 
 ### 8.3.5 Customizing ThreadPoolExecutor After Construction
 - Most of the options passed to the ThreadPoolExecutor constructors can also be modified after construction via setters (such as the core thread pool size, maximum thread pool size, keep-alive time, thread factory, and rejected execution handler).
@@ -1946,7 +1946,7 @@ Speedup \le \cfrac {1} {F + \cfrac {1-F} {N}}
 $$
 As _N_ approaches infinity, the maximum speedup converges to 1/F, meaning that a program in which fifty percent of the processing must be executed serially can be sped up only by a factor of two, regardless of how many processors are available, and a program in which ten percent must be executed serially can be sped up by at most a factor of ten.
 
-Chapter 6 explored identifying logical boundaries for decomposing applications into tasks. But in order to predict what kind of speedup is possible from running your application on a multiprocessor system, **you also need to identify the soures of serialization in your tasks**.
+Chapter 6 explored identifying logical boundaries for decomposing applications into tasks. But in order to predict what kind of speedup is possible from running your application on a multiprocessor system, **you also need to identify the sources of serialization in your tasks**.
 
 Imagine an application where _N_ threads execute _doWork_ in Listing 11.1, fetching tasks from a shared work queue and processing them. At first glance, it may appear that the application is completely parallelizable. However there is a serial component as well - fetching the task from the work queue. The work queue is shared by all the worker threads, and it will require some amount of synchronization to maintain its integrity in the face of concurrent access. If locking is used to guard the state of the queue, then while one thread is dequeing a task, other threads that need to dequeue their next task must wait - and this is where task processing is serialized.
 
@@ -1987,7 +1987,7 @@ If the main thread is the only schedulable thread, it will almost never be sched
 
 Context switches are not free; **1). thread scheduling requires manipulating shared data structures in the OS and JVM**. The OS and JVM use the same CPUs your program does; more CPU time spent in JVM and OS code means less is available for your program. But OS and JVM activity is not the only cost of context switches. When a new thread switched in, the data it needs is unlikely to be in the local processor cache, so **2). a context switch causes a flurry of cache misses**, and thus threads run a little more slowly when they are first scheduled. This is one of the reasons that schedulers give each runnable thread a certain minimum time quantum even when many other threads are waiting: it amortizes the cost of the context switch and its consequences over more uninterrupted execution time, improving overall throughput (at some cost to responsiveness).
 
-When a thread blocks because it is waiting for a contended lock, the JVM usually suspends the thread and allows it to be switched out. If threads block frequently, they will be unable to use their full scheduling quantum. A program that does more blocking (blocking I/O, waiting for contended locks, or waiting on condition variables) incurs more context switchces than one that is CPU-bound, increasing scheduling overhead and reducing throughput. (Non-blocking algorithms can also help reduce context switches; see Chapter 15)
+When a thread blocks because it is waiting for a contended lock, the JVM usually suspends the thread and allows it to be switched out. If threads block frequently, they will be unable to use their full scheduling quantum. A program that does more blocking (blocking I/O, waiting for contended locks, or waiting on condition variables) incurs more context switches than one that is CPU-bound, increasing scheduling overhead and reducing throughput. (Non-blocking algorithms can also help reduce context switches; see Chapter 15)
 
 ### 11.3.2 Memory Synchronization
 The performance cost of synchronization comes from several sources. The visibility guarantees provided by:
@@ -2014,7 +2014,7 @@ synchronized(new Object()) {
 }
 ```
 
-More sophisticated JVMs can use escape anslysis to idenfity when a local object reference is never published to the heap and is therefore thread-local. In getStoogeNames in Listing 11.3, the only reference to the List is the local variable stooges, and stack-confined variables are automatically thread-local. A naive execution of getStoogeNames would acquire and release the lock on the Vector four times, once for each call to add or toString. However, a smart runtime compiler can inline these calls and then see that stooges and its internal state never escape, and therefore that all four lock acquisitions can be eliminated.[<sup>[1]</sup>](#11.3.2.1)
+More sophisticated JVMs can use escape analysis to identify when a local object reference is never published to the heap and is therefore thread-local. In getStoogeNames in Listing 11.3, the only reference to the List is the local variable stooges, and stack-confined variables are automatically thread-local. A naive execution of getStoogeNames would acquire and release the lock on the Vector four times, once for each call to add or toString. However, a smart runtime compiler can inline these calls and then see that stooges and its internal state never escape, and therefore that all four lock acquisitions can be eliminated.[<sup>[1]</sup>](#11.3.2.1)
 
 > <span id ='11.3.2.1'>[1]</span>: This compiler optimization, called lock elision, is performed by the IBM JVM and is expected in HotSpot as of Java 7.
 
@@ -2031,9 +2031,9 @@ public String getStoogeNames() {
 
 Even without escape analysis, compilers can also perform lock coarsening, the merging of adjacent synchronized blocks using the same lock. For getStoogeNames, a JVM that performs lock coarsening might combine the three calls to add and the call to toString into a single lock acquisition and release, using heuristics on the relative cost of synchronization versus the instructions inside the synchronized block. [<sup>[2]</sup>](#11.3.2.2) Not only does this reduce the synchronization overhead, but it also gives the optimizer a much larger block to work with, likely enabling other optimizations.
 
-> <span id='11.3.2'>[2]</span>: A smart dynamic compilier can figure out that this methods always return the same string, and after the first execution recompile getStoogeNames to simply return the value returned by the first execution.
+> <span id='11.3.2'>[2]</span>: A smart dynamic compiler can figure out that this methods always return the same string, and after the first execution recompile getStoogeNames to simply return the value returned by the first execution.
 
-:snowflake: Don't worry excessively about the cost of uncontended synchroniztion. The basic mechanism is already quite fast, and JVMs can perform additional optimizations that further reduce or eliminate the cost. Instead, focus optimization efforts or areas where lock contention actually occurs.
+:snowflake: Don't worry excessively about the cost of uncontended synchronization. The basic mechanism is already quite fast, and JVMs can perform additional optimizations that further reduce or eliminate the cost. Instead, focus optimization efforts or areas where lock contention actually occurs.
 
 Synchronization by one thread can also affect the performance of other threads. Synchronization creates traffic on the shared memory bus; this bus has a limited bandwidth and is shared across all processors. If thread must compete for synchronization bandwidth, all threads using synchronization will suffer.[<sup>[3]</sup>](#11.3.2.3)
 
@@ -2052,16 +2052,16 @@ Blocking due to lock contention also has a cost for the thread holding the lock:
 ## 11.4 Reducing lock Contention
 - Serialization hurts scalability
 - Context switches hurt performance
-- Contended locking causes both, so reducing lock contention can imporve both performance and scalability.
+- Contended locking causes both, so reducing lock contention can improve both performance and scalability.
 - Persistent contention for a lock limits scalability
 
 :warning: The principal threat to scalability in concurrent applications is the exclusive resource lock.
 
-Two factors infulence the likelihood of contention for a lock:
+Two factors influence the likelihood of contention for a lock:
 - how often that lock is requested
 - and how long it is held once acquired[<sup>[1]</sup>](#11.4.1)
 
-If the product of these factors is sufficiently small, then most attempts to acquire the lock will be uncontended, and lock contention will not pose a significient scalability **impediment**. If, however, the lock is in sufficiently high demand, threads will block waiting for it; in the extreme case, processors will sit idle even though there is plenty of work to do.
+If the product of these factors is sufficiently small, then most attempts to acquire the lock will be uncontended, and lock contention will not pose a significant scalability **impediment**. If, however, the lock is in sufficiently high demand, threads will block waiting for it; in the extreme case, processors will sit idle even though there is plenty of work to do.
 
 > <span id='11.4.1'>[1]</span>: This is a corollary of Little's law, a result form queuing theory that says "the average number of customers in a stable system is equal to their average arrival rate multiplied by their average time in the system". (Little, 1961)
 
@@ -2089,7 +2089,7 @@ public class BetterAttributeStore{
           if(location = null) {
                return false;
           }else {
-               return Parttern.matches(regexp, location);
+               return Pattern.matches(regexp, location);
           }
      }
 }
@@ -2103,7 +2103,7 @@ While shrinking synchronized blocks can improve scalability, a synchronized bloc
 ### 11.4.2 Reducing Lock Granularity
 The other way to reduce the fraction of time that a lock is held (and therefore the likelihood that it will be contended) is to have threads ask for it less often. This can be accomplished by lock splitting and lock striping, which involve using separate locks to guard multiple independent state variables previously guarded by a single lock. These techniques reduce the granularity at which locking occurs, potentially allowing greater scalability but using more locks also increases the risk of deadlock.
 
-🍖If a lock guards more than one idenpendent state variable, you may be able to improve scalability by splitting it into multiple locks that each guard different variables. This results in each lock being requested less often.
+🍖If a lock guards more than one independent state variable, you may be able to improve scalability by splitting it into multiple locks that each guard different variables. This results in each lock being requested less often.
 **Listing 11.7 ServerStatus Refactored to Use Split Locks**
 ```java
 @ThreadSafe
@@ -2206,7 +2206,7 @@ When testing for scalability, the goal is usually to keep the processors fully u
 :dog:If the CPUs are asymmetrically utilized (some CPUs are running hot but others are not), your first goal should be to find increased parallelism in your program. Asymmetric utilization indicates that most of the computation is going on in a small set of threads, and your application will not be able to take advantage of additional processors.
 
 :chestnut: If the CPUs are not fully utilized, you need to figure out why. There are several likely causes:
-1. Insufficient load. It may be that the application being tested is just not subjected to enough load. You can test for this by increasing the load and measuring changes in urilization, response time, or service time. Generating enough load to saturate an application can require substantial computer power; the problem may be that the client systems, not the system being tested, are running at capacity.
+1. Insufficient load. It may be that the application being tested is just not subjected to enough load. You can test for this by increasing the load and measuring changes in utilization, response time, or service time. Generating enough load to saturate an application can require substantial computer power; the problem may be that the client systems, not the system being tested, are running at capacity.
 2. I/O-bound. You can determine whether an application is disk-bound using **iostat** or **perfmon**, and whether it is bandwidth-limited by monitoring traffic levels on your network.
 3. Externally bound. If your application depends on external services such as a database or web service, the bottleneck may not be in your code. You can test for this by using a profiler or database administration tools to determine how much time is being spent waiting for answers from the external service.
 4. Lock contention. Profiling tools can tell you how much lock contention your application is experiencing and which locks are "hot". You can often get the same information without a profiler through random sampling, triggering a few thread dumps and looking for threads contending for locks. If a thread is blocked waiting for a lock, the appropriate stack frame in the thread dump indicates "waiting to lock monitor ..." Locks that are mostly uncontended rarely show up in a thread dump; a heavily contended lock will almost always have at least on thread waiting to acquire it and so will frequently appear in thread dumps.
@@ -2215,3 +2215,28 @@ If your application is keeping the CPUs sufficiently hot, you can use monitoring
 
 ### 11.4.7 Just Say No to Object Pooling
 <span style='font-size:35px'>:icecream:</span> Allocating objects is usually cheaper than synchronizing.
+
+#:unicorn:Summary
+Because one of the most common reasons to use threads is to exploit multiple processors, in discussing the performance of concurrent applications, we are usually more concerned with throughput or scalability than we are with raw service time. Amdahl's law tells us that the scalability of an application is driven by the proportion of code that must be executed serially. Since the primary source of serialization in Java programs is the exclusive resource lock, scalability can often be improved by spending less time holding locks, either by reducing lock granularity, reducing the duration for which locks are held, or replacing exclusive locks with nonexclusive or non-blocking alternatives.
+
+---
+# Chapter 12 Testing Concurrent Programs
+Most tests of concurrent classes fall into one or both of the classic categories of safety and liveness. In Chapter 1, we defined **safety as "nothing bad ever happens" and liveness are "something good eventually happens."**
+
+Tests to safety, which verify that a class's behavior conforms to its specification, usually take the form of testing invariants. For example, in a linked list implementation that caches the size of the list every time it is modified, one safety test would be to compare the cached count against the actual number of elements in the list.
+
+Liveness tests include tests of progress and non-progress, which are hard to quantify - how do you verify that a method is blocking and not merely running slowly? Similarly, how do you test that an algorithm does not deadlock? How long should you wait before you declare it to have failed?
+
+Related to liveness tests are performance tests. Performance can be measured in a number of ways, including:
+- Throughput: the rate at which a set of concurrent tasks is completed;
+- Responsiveness: the delay between a request for and completion of some action (also called latency); or
+- Scalability: the improvement in throughput (or lack thereof) as more resources (usually CPUs) are made available.
+
+## 12.1 Testing for Correctness
+posit
+
+
+
+
+
+
