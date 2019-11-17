@@ -2235,8 +2235,63 @@ Related to liveness tests are performance tests. Performance can be measured in 
 ## 12.1 Testing for Correctness
 posit
 
+---
+# Chapter 13 Explicit Locks
+## 13.1 Lock and ReentrantLock
+**Listing 13.1 Lock Interface**
+```java
+public interface Lock {
+     void lock();
+     void lockInterruptibly() throw InterruptedException;
+     boolean tryLock();
+     boolean tryLock(long timeout, TimeUnit unit) throw InterruptedException;
+     void unlock();
+     Condition newCondition();
+}
+```
 
+**ReentrantLock** implements Lock, providing the same mutual exclusion and memory-visibility  guarantees as synchronized. Acquiring a ReentrantLock has the same memory semantics as entering a synchronized block, and releasing a ReentrantLock has the same memory semantics as exiting a synchronized block. And, like synchronized, ReentrantLock offers reentrant locking semantics. 
 
+Why create a new locking mechanism that is so similar to intrinsic locking? Intrinsic locking works fine in most situations but has some functional limitations:
+- it is not possible to interrupt a thread waiting to acquire a lock
+- or to attempt to acquire a lock without being willing to wait for it forever. 
+- Intrinsic locks also must be released in the same block of code in which they are acquired; this simplifies coding and interacts nicely with exception handling, but makes non-block-structured locking disciplines impossible.
+None of these are reasons to abandon synchronized, but in some cases a more flexible locking mechanism offers better liveness or performance.
+### 13.1.1 Polled and Timed Lock Acquisition
+The timed and polled lock-acquisition modes provided by **TryLock** allow more sophisticated error recovery than unconditional acquisition. With intrinsic locks, a deadlock is fatal - the only way to recover is to restart the application, and the only defense is to construct your program so that inconsistent lock ordering is impossible. Timed and polled locking offer another option: probabilistic deadlock avoidance.
 
+Timed locks are also useful in implementing activities that manage a time budget.(by using the timed version of tryLock method.)
 
+Using an exclusive lock to guard access to a resource can ensure the access serialized.
 
+### 13.1.2 Interruptible Lock Acquisition
+Interruptible lock acquisition allows locking to be used within cancellable activities.
+### 13.1.3 Non-block-structured Locking
+With intrinsic locks, acquire-release pairs are block-structured. A lock is always released in the same basic block in which it was acquired, regardless of how control exits the block. Automatic lock release simplifies analysis and prevents potential coding errors, but sometimes a more flexible locking discipline is need.
+
+## 13.3 Fairness
+Threads acquire a fair lock in the order in which they requested it, whereas a non-fair lock permits barging: threads requesting a lock can jump ahead of the queue of waiting threads if the lock happens to be available when it is requested. Non-fair ReentrantLocks do not go out of their way to promote barging, they simply don't prevent a thread from barging if it shows up at the right time. With a fair lock, a newly requesting thread is queued if the lock is held by another thread or if threads are queued waiting for the lock; with a non-fair lock, the thread is queued only if the lock is currently held.[<sup>[1]</sup>](#13.3.1)
+> <span id ='13.3.1'>[1]</span>: The polled tryLock always barges, even for fair locks.
+
+One reason barging locks perform so much better than fair locks under heavy contention is that there can be a significant delay between when a suspended thread is resumed and when it actually runs.
+
+## 13.4 Choosing Between Synchronized and ReentrantLock
+ReentrantLock provides the same locking and memory semantics as intrinsic locking, as well as additional features such as **timed lock waits, interruptible lock waits, fairness, and the ability to implement non-block-structured locking**.
+
+:cat: ReentrantLock is an advanced tool for situations where intrinsic locking is not practical. Use is if you need its advanced features: timed, polled, or interruptible lock acquisition, fair queuing, or non-block-structured locking. Otherwise, prefer synchronized.
+
+Under Java 5.0, intrinsic locking has another advantage over ReentrantLock: thread dumps show which call frames acquired which locks and can detect and identify deadlocked threads. The JVM knows nothing about which threads hold ReentrantLocks and therefore cannot help in debugging threading problems using ReentrantLock. This disparity is addressed in Java 6 by providing a management and monitoring interface with which locks can register, enabling locking information for ReentrantLocks to appear in thread dumps and through other management and debugging interfaces. The availability of this information for debugging is a substantial, if mostly temporary, advantage for synchronized. The non-block-structured nature of ReentrantLock means that lock acquisitions cannot be tied to specific stack frames, as they can with intrinsic locks. 
+
+Future performance improvements are likely to favor synchronized over ReentrantLock. Because synchronized is built into the JVM, it can perform optimizations such as lock elision for thread-confined lock objects and lock coarsening to eliminate synchronization with intrinsic locks; doing this with library-based locks seems far less likely. 
+
+## 13.5 Read-write Locks
+A resource can be accessed by multiple readers or single writer at a time, but not both.
+
+The interaction between the read and write locks allows for a number of possible implementations. Some of the implementation options for a ReadWriteLock are:
+- Release preference. When a writer releases the write lock and both readers and writers are queued up, who should be given preference - readers, writers, or whoever asked first?
+- Reader barging. If the lock is held by readers but there are waiting writers, should newly arriving readers be granted immediate access, or should they wait behind the writers? Allowing readers to barge ahead of writers enhances concurrency but runs the risk of starving writers.
+- Reentrancy. Are the read and write locks reentrant?
+- Downgrading. If a thread holds the write lock, can it acquire the read lock without releasing the write lock? This would let a writer "downgrade" to a read lock without letting other writers modify the guarded resource in the meantime.
+- Upgrading. Can a read lock be upgraded to a write lock in preference to other waiting readers or writers? Most read-write lock implementations do not support upgrading, because without(作者这里写的是without, 但是好像有点说不通) an explicit operation it is deadlock-prone. (If two readers simultaneously attempt to upgrade to a write lock, neither will release the read lock.)
+
+**ReentrantReadWriteLock** provides reentrant locking semantics for both locks. Like ReentrantLock, a ReentrantReaderWriteLock can be constructed as non-fair(the default) or fair. With a fair lock, preference is given to the thread that has been waiting the longest; if the lock is held by readers and a thread requests the write lock, no more readers are allowed to acquire the read lock until the writer has been serviced and releases the write lock.(也就是write锁的获取优先于read锁的获取) With a non-fair lock, the order in which threads are granted access is unspecified. Downgrading from writer to reader is permitted; upgrading from reader to writer is not (attempting to do so results in deadlock).
