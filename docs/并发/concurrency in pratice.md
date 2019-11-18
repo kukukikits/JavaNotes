@@ -2295,3 +2295,111 @@ The interaction between the read and write locks allows for a number of possible
 - Upgrading. Can a read lock be upgraded to a write lock in preference to other waiting readers or writers? Most read-write lock implementations do not support upgrading, because without(作者这里写的是without, 但是好像有点说不通) an explicit operation it is deadlock-prone. (If two readers simultaneously attempt to upgrade to a write lock, neither will release the read lock.)
 
 **ReentrantReadWriteLock** provides reentrant locking semantics for both locks. Like ReentrantLock, a ReentrantReaderWriteLock can be constructed as non-fair(the default) or fair. With a fair lock, preference is given to the thread that has been waiting the longest; if the lock is held by readers and a thread requests the write lock, no more readers are allowed to acquire the read lock until the writer has been serviced and releases the write lock.(也就是write锁的获取优先于read锁的获取) With a non-fair lock, the order in which threads are granted access is unspecified. Downgrading from writer to reader is permitted; upgrading from reader to writer is not (attempting to do so results in deadlock).
+
+---
+# Chapter 14 - Building Custom Synchronizers
+## 14.1 Managing State Dependence
+### 14.1.3 Condition Queues to the Rescue
+Just as each Java Object can act as a lock, each object can also act as a condition queue, and the wait, notify, and notifyAll methods in Object constitute the API for intrinsic condition queues. An object's intrinsic lock and its intrinsic condition queue are related: in order to call any of the condition queue methods on object X, you must hold the lock on X.
+
+BoundedBuffer in Listing 14.6 implements a bounded buffer using wait and notifyAll. This is efficient (waking up less frequently if the buffer state does not change) and responsive (waking up promptly when an interesting state change happens).
+
+**Listing 14.6 Bounded Buffer Using Condition Queues**
+```java
+@ThreadSafe
+public class BoundedBuffer<V> extends BaseBoundedBuffer<V> {
+     public BoundedBuffer(int size) {
+          super(size);
+     }
+
+     public synchronized void put(V v) throws InterruptedException {
+          while(isFull()){
+               wait();
+          }
+          doPut(v);
+          notifyAll();
+     }
+     public synchronized V take() throws InterruptedException {
+          while (isEmpty()) {
+               wait();
+          }
+          V v = doTake();
+          notifyAll();
+          return v;
+     }
+}
+```
+
+## 14.2 Using Condition Queues
+### 14.2.1 The Condition Predicate
+:pill: Document the condition predicate(s) associated with a condition queue and the operations that wait on them
+
+:dog: Every call to **wait** is implicitly associated with a specific condition predicate. When calling **wait** regarding a particular condition predicate, the caller must already hold the lock associated with the condition queue, and that lock must also guard the state variables from which the condition predicate is composed.
+
+### 14.2.2 Waking Up Too Soon
+**Wait** returns does not necessarily mean that the condition predicate the thread is waiting for has become true.
+
+A single intrinsic condition queue may be used with more than one condition predicate. When your thread is awakened because someone called **notifyAll**, that doesn't mean that the condition predicate you were waiting for is now true. (This is like having your toaster and coffee maker share a single bell; when it rings, you still have to look to see which device raised the signal.) Additionally, **wait** is even allowed to return "spuriously" not in response to any thread calling **notify**.[<sup>[1]</sup>](#14.2.2.1)
+> <span id='14.2.2.1'>[1]</span>: To push the breakfast analogy way too far, this is like a toaster with a loose connection that makes the bell go off when the toast is ready but also sometimes when it is not ready.
+
+When control re-enters the code calling **wait**, it has reacquired the lock associated with the condition queue. Is the condition predicate now true? Maybe. It might have been true at the time the notifying thread called **notifyAll**, but could have become false again by the time you reacquire the lock. Other threads may have acquired the lock and changed the object's state between when your thread was awakened and when wait reacquired the lock. Or maybe it hasn't been true at all since you called **wait**. You don't know why another thread called **notify** or **notifyAll**; maybe it was because another condition predicate associated with the same condition queue became true. Multiple condition predicates per condition queue are quite common - BoundedBuffer uses the same condition queue for both the "not full" and "not empty" predicates.[<sup>[2]</sup>](#14.2.2.2)
+> <span id ='14.2.2.2'>[2]</span>: It is actually possible for threads to be waiting for both "not full" and "not empty" at the same time! This can happen when the number of producers/consumers exceeds the buffer capacity.
+
+For all these reasons, when you wake up from **wait** you must test the condition predicate again, and go back to waiting (or fail) if it is not yet true. Since you can wake up repeatedly without your condition predicate being true, you must therefore always call wait from within a loop, testing the condition predicate in each iteration. The canonical form for a condition **wait** is shown in Listing 14.7.
+
+**Listing 14.7 Canonical Form for State-dependent Methods**
+```java
+void stateDependentMethod() throws InterruptedException{
+     //condition predicate must be guarded by lock
+     synchronized(lock) {
+          while(!conditionPredicate()) {
+               lock.wait();             
+          }
+            //object is now in desired state
+     }
+}
+```
+:cat: When using condition waits (**Object.wait** or **Condition.await**):
+- Always have a condition predicate —— some test of object state that must hold before proceeding;
+- Always test the condition predicate before calling **wait**, and again after returning from **wait**;
+- Always call **wait** in a loop;
+- Ensure that the sate variables making up the condition predicate are guarded by the lock associated with the condition queue;
+- Hold the lock associated with the condition queue when calling **wait**, **notify**, or **notifyAll**; and
+- Do not release the lock after checking the condition predicate but before acting on it.
+
+### 14.2.3 Missed Signals
+Chapter 10 discussed liveness failures such as deadlock and livelock. Another form of liveness failure is missed signals. A missed signal occurs when a thread must wait for a specific condition that is already true(看Listing 14.7，当断言条件为true时，应该退出循环), but fails to check the condition predicate before waiting. Now the thread is waiting to be notified of an event that has already occurred. This is like starting the toast, going out to get the newspaper, having the bell go off while you are outside, and then sitting down at the kitchen table waiting for the toast bell. You could wait a long time - potentially forever. Unlike the marmalade for your toast, notification is not "sticky", if thread A notifies on a condition queue and thread B subsequently waits on that same condition queue, B does not immediately wake up, another notification is required to wake B. Missed signals are the result of coding errors like those warned against in the list above, such as failing to test the condition predicate before calling wait. If you structure your condition waits as in Listing 14.7, you will not have problems with missed signals.
+
+### 14.2.4 Notification
+:+1: Whenever you wait on a condition, make sure that someone will perform a notification whenever the condition predicate becomes true.
+
+There are two notification methods in the condition queue API —— **notify** and **notifyAll**. Because you must hold the lock on the condition queue object when calling notify or notifyAll, and waiting threads cannot return from **wait** without reacquiring the lock, **the notifying thread should release the lock quickly to ensure that the waiting threads are unblocked as soon as possible.**
+
+Because multiple threads could waiting on the same condition queue for different condition predicates, using **notify** instead of **notifyAll** can be dangerous, primarily because single notification is prone to a problem akin to missed signals.
+
+:panda_face: Single notify can be used instead of notifyAll only when both of the following conditions hold:
+- Uniform waiters. Only one condition predicate is associated with the condition queue, and each thread executes the same logic upon returning from wait; and
+- One-in, one-out. A notification on the condition variable enables at most one thread to proceed.
+
+BoundedBuffer meets the one-in, one-out requirement, but does not meed the uniform waiter requirement because waiting threads might be waiting for either the "not full" and "not empty" condition.
+
+Most classes don't meet these requirements, so the prevailing wisdom[<sup>[1]</sup>](#14.2.4.1) is to use notifyAll in preference to single notify. While this may be inefficient, it is much easier to ensure that your classed behave correctly when using notifyAll instead of notify.
+
+> <span id='14.2.4.1'>[1]</span>: This prevailing wisdom makes some people uncomfortable, and for good reason. Using notifyAll when only one thread can make progress is inefficient, sometimes a little, sometimes grossly so. If ten threads are waiting on a condition queue, calling notifyAll causes each of them to wake up and contend for the lock; then most or all of them will go right back to sleep. This means a lot of context switches and a lot of contended lock acquisitions for each event that enables (maybe) a single thread to make progress.
+In the worst case, using notifyAll results in $O(n^2)$ wakeups where $n$ would suffice. —— 也就是说一次性唤醒太多的线程可能存在性能问题
+
+The notification done by **put** and **take** in BoundedBuffer is conservative: a notification is performed every time an object is put into or removed from the buffer. This could be optimized by observing that a thread can be released from a wait only if the buffer goes from empty to not empty or from full to not full, and notifying only if a put or take effected one of these state transitions. This is called conditional notification. While conditional notification can improve performance, it is tricky to get right (and also complicates the implementation of subclasses) and so should be used carefully. Listing 14.8 illustrates using conditional notification in BoundedBuffer.put.
+
+**Listing 14.8 Using Conditional Notification in BoundedBuffer.put**
+```java
+public synchronized void put(V v) throws InterrputedException {
+     while(isFull()) {
+          wait();
+     }
+     boolean wasEmpty = isEmpty();
+     doPut(v);
+     if (wasEmpty) {
+          notifyAll();
+     }
+}
+```
