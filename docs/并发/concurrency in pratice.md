@@ -2747,3 +2747,218 @@ The language syntax for locking may be compact, but the work done by the JVM and
 > <span id='15.2.2.1'>[1]</span>: Actually, the biggest disadvantage of CAS is the difficulty of constructing the surrounding algorithms correctly.
 
 ## 15.3 Atomic Variable Classes
+Atomic variables are finer-grained and lighter-weight than locks, and are critical for implementing high-performance concurrent code on multiprocessor systems. Atomic variables limit the scope of contention to a single variable; this is as fine-grained as you can get.
+
+There are twelve atomic variable classes, divided into four groups: scalars, field updaters, arrays, and compound variables. The most commonly used atomic variables are the scalars: AtomicInteger, AtomicLong, AtomicBoolean, and AtomicReference. All support CAS; the Integer and Long versions support arithmetic as well. (To simulate atomic variables of other primitive types, you can cast short or byte values to and from int, and use floatToIntBits or doubleToLongBits for floating-point numbers.)
+
+### 15.3.1 Atomics as "Better Volatiles"
+CasNumberRange in Listing 15.3 uses an AtomicReference to an IntPair to hold the state; by using **compareAndSet** it can update the upper or lower bound without the race conditions of NumberRange.
+
+**Listing 15.3 Preserving Multi-variable Invariants Using CAS**
+```java
+public class CasNumberRange {
+     @Immutable
+     private static class IntPair {
+          final int lower; //Invariant: lower <= upper
+          final int upper;
+          ...
+     }
+
+     private final AtomicReference<IntPair> values = new AtomicReference<>(new IntPair(0, 0));
+
+     public int getLower() {
+          return values.get().lower;
+     }
+
+     public int getUpper() {
+          return values.get().upper;
+     }
+
+     public void setLower(int i) {
+          while (true) {
+               IntPair oldv = values.get();
+               if (i > oldv.upper) {
+                    throw new IllegalArgumentException("Can't set lower to " + i + "> upper");
+               }
+
+               IntPair newv = new IntPair(i, old.upper);
+               if (values.compareAndSet(oldv, newv)) {
+                    return;
+               }
+          }
+     }
+
+     // similarly for setUpper
+}
+```
+
+### 15.3.2 Performance Comparison: Locks Versus Atomic Variables
+With low to moderate contention, atomics offer better scalability; with high contention, locks offer better contention avoidance. (CAS-based algorithms also outperform lock-based ones on single-CPU system, since a CAS always succeeds on a single-CPU system except in the unlikely case that a thread is preempted in the middle of the read-modify-write operation.)
+
+It is often cheaper to not share state at all if it can be avoided.
+
+## 15.4 Non-blocking Algorithms
+- An algorithm is called non-blocking if failure or suspension of any thread cannot cause failure or suspension of another thread;
+- An algorithm is called lock-free if, at each step, some thread can make progress.
+
+Algorithms that use CAS exclusively for coordination between threads, if constructed correctly, be both non-blocking an lock-free. An uncontended CAS always succeeds, and if multiple threads contend for a CAS, one always wins and therefore makes progress. Non-blocking algorithms are also immune to deadlock or priority inversion (though they can exhibit starvation or livelock because they can involve repeated retries).
+
+### 15.4.1 A Non-blocking Stack
+Non-blocking algorithms are considerably more complicated than their lock-based equivalents. **The key to creating non-blocking algorithms is figuring out how to limit the scope of atomic changes to a single variable while maintaining data consistency.** 
+
+ConcurrentStack in Listing 15.6 shows how to construct a stack using atomic references.
+
+CasCounter and ConcurrentStack illustrate characteristics of all non-blocking algorithms: some work is done speculatively and may have to be redone. In ConcurrentStack, when we construct the Node representing the new element, we are hoping that the value of the next reference will still be correct by the time it is installed on the stack, but are prepared to retry in the event of contention.
+
+**Listing 15.6 Non-blocking Stack Using Treiber's Algorithm (Treiber, 1986)**
+```java
+@ThreadSafe
+public class ConcurrentStack<E> {
+     AtomicReference<Node<E>> top = new AtomicReference<>();
+
+     public void push(E item) {
+          Node<E> newHead = new Node<>(item);
+          Node<E> oldHead;
+          do {
+               oldHead = top.get();
+               newHead.next = oldHead;
+          } while (!top.compareAndSet(oldHead, newHead));
+     }
+
+     public E pop() {
+          Node<E> oldHead;
+          Node<E> newHead;
+          do {
+               oldHead = top.get();
+               if(oldHead == null) {
+                    return null;
+               }
+               newHead = oldHead.next;
+          } while(!top.compareAndSet(oldHead, newHead));
+          return oldHead.item;
+     }
+
+     private static class Node<E> {
+          public final E item;
+          public Node<E> next;
+          public Node(E item) {
+               this.item = item;
+          }
+     }
+}
+```
+
+### 15.4.2 A Non-blocking Linked List
+The two non-blocking algorithms we've seen so far, the counter and the stack, illustrate the basic pattern of using CAS to update a value speculatively, retrying if the update fails. **The trick to building non-blocking algorithms is to limit the scope of atomic changes to a single variable.** With counters this is trivial, and with a stack it is straightforward enough, but for more complicated data structures such as queues, hash tables, or trees, it can get a lot trickier.
+
+A linked queue is more complicated than a stack because it must support fast access to both the head ant the tail. To do this, it maintains separate head and tail pointers. Two pointers refer to the node at the tail: the next pointer of the current last element, and the tail pointer. To insert a new element successfully, both of these pointers must be updated atomically. At first glance, this cannot be done with atomic variables; separate CAS operations are required to update the two pointers, and if the first succeeds but the second one fails the queue is left in an inconsistent state. And, even if both operations succeed, another thread could try to access the queue between the first the second. Building a non-blocking algorithm for a linked queue requires a plan for both these situations.
+
+We need several tricks to develop this plan.
+- The first is to ensure that the data structure is always in a consistent state, even in the middle of an multi-stop update. That way, if thread A is in the middle of a update when thread B arrives on the scene, B can tell that an operation has been partially completed and knows not to try immediately to apply its own update. Then B can wait (by repeatedly examining the queue state) until A finishes, so that the two don't get in each other's way.
+
+While this trick by itself would suffice to let threads "take turns" accessing the data structure without corrupting it, if one thread failed in the middle of an update, no thread would be able to access the queue at all. To make the algorithm non-blocking, we must ensure that the failure of a thread does not prevent other threads from making progress. Thus, the second trick is to make sure that if B arrives to find the data structure in the middle of an update by A, enough information is already embodied in the data structure for B to finish the update for A. If B "helps" A by finishing A's operation, B can proceed with its own operation without waiting for A. When A gets around to finishing its operation, it will find that B already did the job for it.
+
+LinkedQueue in Listing 15.7 shows the insertion portion of the Michael-Scott non-blocking linked-queue algorithm (Michael and Scott, 1996), which is used by ConcurrentLinkedQueue. As in many queue algorithms, an empty queue consists of a "sentinel" or "dummy" node, and the head and tail pointers are initialized to refer to the sentinel. The tail pointer always refers to the sentinel (if the queue is empty), the last element in the queue, or (in the case that an operation is in mid-update) the second-to-last element. Figure 15.3 illustrates a queue with two elements in the normal, or quiescent state.
+
+**Figure 15.3 Queue with Two Elements in Quiescent State**
+```puml
+@startuml
+object tail
+object head
+object dummy
+object 1
+object 2
+head -down-> dummy
+tail -down-> 2
+dummy -right-> 1
+1 -right-> 2
+@enduml
+```
+
+Inserting a new element involves updating two pointers. The first links the new node to the end of the list by updating the next pointer of the current last element; the second swings the tail pointer around to point to the new last element.
+
+Between these two operations, the queue is in the intermediate state, shown in Figure 15.4. After the second update, the queue is again in the quiescent state, shown in Figure 15.5.
+
+**Figure 15.4 Queue in Intermediate State During Insertion**
+```puml
+@startuml
+object tail
+object head
+object dummy
+object 1
+object 2
+object 3
+head -down-> dummy
+tail -down-> 2
+dummy -right-> 1
+1 -right-> 2
+2 -right-> 3
+@enduml
+```
+
+**Figure 15.5 Queue Again in Quiescent State After Insertion is Complete**
+```puml
+@startuml
+object tail
+object head
+object dummy
+object 1
+object 2
+object 3
+head -down-> dummy
+tail -down-> 3
+dummy -right-> 1
+1 -right-> 2
+2 -right-> 3
+@enduml
+```
+
+The key observation that enables both of the required tricks is that if the queue is in the quiescent state, the _next_ field of the link node pointed to by _tail_ is null, and if it is in the intermediate state, _tail.next_ is non-null. So any thread can immediately tell the state of the queue by examining _tail.next_. Further, if the queue is in the intermediate state, it can be restored to the quiescent state by advancing the tail pointer forward node node, finishing the operation for whichever thread is in the middle of inserting an element.[<sup>[1]</sup>](#15.5.1)
+
+> <span id='15.5.1'>[1]</span>: For a full account of the correctness of this algorithm, see (Michael and Scott, 1996) or (Herlihy and Shavit, 2006).
+
+**LinkedQueue.put** first checks to see if the queue is in the intermediate state before attempting to insert a new element (step A). If it is, then some other thread is already in the process of inserting an element (between its steps C and D). Rather than wait for that thread finish, the current thread helps it by finishing the operation for it, advancing the tail pointer (step B). It then repeats this check in case another thread has started inserting a new element, advancing the tail pointer until it finds the queue in the quiescent state so it can begin its own insertion.
+
+The CAS at step C, which links the new node at the tail of the queue, could fail if two threads try to insert an element at the same time. In that case, no harm is done: no changes have been made, and the current thread can just reload the tail pointer and try again. Once C succeeds, the insertion is considered to have taken effect; the second CAS (step D) is considered "cleanup", since it can be performed either by the inserting thread or by any other thread. If D fails, the inserting thread returns anyway rather than retrying the CAS, because no retry is needed - another thread has already finished the job in its step B! This works because before any thread tries to link a new node into the queue, it first checks to see if the queue needs cleaning up by checking if **tail.next** is non-null. If it is, it advances the tail pointer first (perhaps multiple times) until the queue is in the quiescent state.
+
+**Listing 15.7 Insertion in the Michael-Scott Non-blocking Queue Algorithm (Michael and Scott, 1996)**
+```java
+@ThreadSafe
+public class LinkedQueue<E> {
+     private static class Node<E> {
+          final E item;
+          final AtomicReference<Node<E>> next;
+          public Node(E item, Node<E> next) {
+               this.item = item;
+               this.next = new AtomicReference<>(next);
+          }
+     }
+
+     private final Node<E> dummy = new Node<E> (null, null);
+     private final AtomicReference<Node<E>> head = new AtomicReference<>(dummy);
+     private final AtomicReference<Node<E>> tail = new AtomicReference<>(dummy);
+
+     public boolean put(E item) {
+          Node<E> newNode = new Node<> (item, null);
+          while(true) {
+               Node<E> curTail = tail.get();
+               Node<E> tailNext = curTail.next.get();
+               if(curTail == tail.get()) {
+                    if(tailNext != null){    //A
+                         //Queue in intermediate state, advance tail
+                         tail.compareAndSet(curTail, tailNext);  //B
+                    } else {
+                         //In quiescent state, try inserting new node
+                         if(curTail.next.compareAndSet(null, newNode)) {   //C
+                              //Insertion succeeded, try advancing tail
+                              tail.compareAndSet(curTail, newNode);   //D
+                              return true;
+                         }
+                    }
+               }
+          }
+     }
+}
+```
+
+### 15.4.3 Atomic Field Updaters
