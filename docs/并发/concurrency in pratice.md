@@ -2962,3 +2962,153 @@ public class LinkedQueue<E> {
 ```
 
 ### 15.4.3 Atomic Field Updaters
+Listing 15.7 illustrates the algorithm used by **ConcurrentLinkedQueue**, but the actual implementation is a bit different. Instead of representing each Node with an atomic reference, ConcurrentLinkedQueue uses an ordinary volatile reference and updates it through the reflection-based **AtomicReferenceFieldUpdater**, as shown in Listing 15.8.
+
+**Listing 15.8 Using Atomic Field Updaters in ConcurrentLinkedQueue**
+```java
+private class Node<E> {
+     private final E item;
+     private volatile Node<E> next;
+
+     public Node(E item) {
+          this.item = item;
+     }
+}
+
+private static AtomicReferenceFieldUpdater<Node, Node> nextUpdater = AtomicReferenceFieldUpdater.newUpdater(Node.class, Node.class, "next");
+```
+
+The atomic field updater classed (available in Integer, Long, and Reference versions) represent a reflection-based "view" of an existing volatile field so that CAS can be used on existing volatile fields. The updater classes have no constructors; to create one, you call the newUpdater factory method, specifying the class and field name. The field updater classes are not tied to specific instance; one can be used to update the target field for any instance of the target class. The atomicity guarantees for the updater classes are weaker than for the regular atomic classes because you cannot guarantee that the underlying fields will not be modified directly, the compareAndSet and arithmetic methods guarantee atomicity only with respect to other threads using the atomic field updater methods.
+
+In ConcurrentLinkedQueue, updates to the next field of a Node are applied using the compareAndSet method of nextUpdater. This somewhat circuitous approach is used entirely for performance reasons. For frequently allocated, short-lived objects like queue link nodes, eliminating the creation of an AtomicReference for each Node is significant enough to reduce the cost of insertion operations. However, in nearly all situations, ordinary atomic variables perform just fine - in only a few cases will the atomic field updaters be needed. (The atomic field updaters are also useful when you want to perform atomic updates while preserving the serialized form of an existing class.)
+
+### 15.4.4 The ABA Problem
+The ABA problem is an **anomaly** that can arise from the naive use of compare-and-swap in algorithms where nodes can be recycled (primarily in environments without garbage collection). Sometimes we want to ask "Has the value of V changed since I last observed it to be A?" For some algorithms, changing V from A to B and then back to A still counts as a change that requires us to retry some algorithmic step.
+
+There is a simple solution: instead of updating the value of a reference, update a pair of values, a reference and a version number. Even if the value changes from A to B and back to A, the version numbers will be different. AtomicStampedReference (and its cousin AtomicMarkableReference) provide atomic conditional update on a pair of variables. AtomicStampedReference updates an object reference-integer pair, allowing "versioned" references that are immune[<sup>[1]</sup>](#15.4.4.1) to the ABA problem. Similarly, AtomicMarkableReference updates an object reference-boolean pair that is used by some algorithms to let a node remain in a list while being marked as deleted.[<sup>[2]</sup>](#15.4.4.2)
+
+> <span id='15.4.4.1'>[1]<span>: In practice; theoretically the counter could wrap.
+> <span id='15.4.4.2'>[2]</span>: Many processors provide a double-wide CAS (CAS2 or CASX) operation that can operate on a pointer-integer pair, which would make this operation reasonably efficient. As of Java 6, Atomic-StampedReference does not use double-wide CAS even on platforms that support it. (Double-wide CAS differs form DCAS, which operates on two unrelated memory locations; as of this writing, no current processor implements DCAS.)
+
+---
+# Chapter 16. The Java Memory Model
+## 16.1 What is a Memory Model, and Why would I want one?
+Suppose one thread assigns a value to aVariable:
+```java
+aVariable = 3;
+```
+
+**A memory model addresses the question "Under what conditions does a thread that reads aVariable see the value 3?"** This may sound like a dumb question, but in the absence of synchronization, there are a number of reasons a thread might not immediately - or ever - see the results of an operation in another thread. 
+- Compilers may generate instructions in a different order than the "obvious" one suggested by the source code, or store variables in registers instead of in memory;
+- processors may execute instructions in parallel or out of order;
+- caches may vary the order in which writes to variables are committed to main memory;
+- and values stored in processor-local caches may not be visible to other processors. 
+
+These factors can prevent a thread from seeing the most up-to-date value for a variable and can cause memory actions in other threads to appear to happen out of order - if you don't use adequate synchronization.
+
+**The Java Language Specification requires the JVM to maintain within thread as-if-serial semantics: as long as the program has the same result as if it were executed in program order in a strictly sequential environment, all these games are permissible.**
+
+**The JMM specifies the minimal guarantees the JVM must make about when writes to variables become visible to other threads.** It was designed to balance the need for predictability and ease of program development with the realities of implementing high-performance JVMs on a wide range of popular processor architectures.
+
+### 16.1.1 Platform Memory Models
+In a shared-memory multiprocessor architecture, each processor has its own cache that is periodically reconciled with main memory. Processor architectures provide varying degrees of cache coherence; some provide minimal guarantees that allow different processors to see different values for the same memory location at virtually any time. The operating system, compiler, and runtime (and sometimes, the program, too) must make up the difference between what the hardware provides and what thread safety requires.
+
+An architecture's memory model tells programs what guarantees they can expect from the memory system, and specifies the special instructions required (called memory barriers or fences) to get the additional memory coordination guarantees required when sharing data. In order to shield the Java developer from the differences between memory models across architectures, Java provides its own memory model, and the JVM deals with the differences between the JMM and the underlying platform's memory model by inserting memory barriers at the appropriate place.
+
+One convenient mental model for program execution is to imagine that there is a single order in which the operations happen in a program, regardless of what processor they execute on, and that each read of a variable will see the last write in the execution order to that variable by any processor. This happy, if unrealistic, model is called **sequential consistency.** Software developers often mistakenly assume sequential consistency, but no modern multiprocessor offers sequential consistency and the JMM does not either. 
+
+The bottom line is that modern shared-memory multiprocessors (and compilers) can do some surprising things when data is shared across threads. unless you've told them not to through the use of memory barriers. Fortunately, **Java programs need not specify the placement of memory barriers; they need only identify when shared state is being accessed, through the proper use of synchronization.**
+
+### 16.1.2 Reordering
+PossibleReordering in Listing 16.1 illustrates how difficult it is to reason about the behavior of even the simplest concurrent programs unless they are correctly synchronized. It is fairly easy to imagine how PossibleReordering could print (1, 0), or (0, 1), or (1, 1): 
+- thread A could run to completion before B starts,
+- B could run to completion before A starts,
+- or their actions could be interleaved.
+
+But, strangely, PossibleReordering can also print (0, 0)! The actions in each thread have no data flow dependence on each other, and accordingly can be executed out of order. (Even if they are executed in order, the timing by which caches are flushed to main memory can make it appear, from the perspective of B, that the assignments in A occurred in the opposite order.) Figure 16.1 shows a possible interleaving with reordering the results in printing (0, 0).
+
+**Figure 16.1 Interleaving Showing Reordering in PossibleReordering**
+```puml
+@startuml
+ThreadA --> ThreadA: y=b(0)
+ThreadB --> ThreadB: b=1
+note over ThreadA: Reorder
+ThreadB --> ThreadB: x=a(0)
+ThreadA --> ThreadA: a=1
+@enduml
+```
+
+:cry:**Listing 16.1 Insufficiently Synchronized Program that can have Surprising Results. Don't do this.**
+```java
+public class PossibleReordering {
+     static int x = 0, y = 0;
+     static int a = 0, b = 0;
+
+     public static void main(String[] args) throw InterruptedException {
+          Thread one = new Thread(new Runnable() {
+               public void run() {
+                    a = 1;
+                    x = b;
+               }
+          });
+          Thread other = new Thread(new Runnable() {
+               public void run() {
+                    b = 1;
+                    y = a;
+               }
+          });
+          one.start(); other.start();
+          one.join(); other.join();
+          System.out.println("(" + x + "," + y + ")");
+     }
+}
+
+```
+
+PossibleReordering is a trivial program, and it is still surprisingly tricky to enumerate its possible results. Reordering at the memory level can make programs behave unexpectedly. It is prohibitively difficult to reason about ordering in the absence of synchronization; it is much easier to ensure that your program uses synchronization appropriately. Synchronization inhibits the compiler, runtime, and hardware from reordering memory operations in ways that would violate the visibility guarantees provided by the JMM.[<sup>[1]</sup>](#16.1.2.1)
+
+> <span id='16.1.2.1'>[1]</span>: On most popular processor architectures, the memory model is strong enough that the performance cost of a volatile read is in line with that of a nonvolatile read.
+
+### 16.1.3 The Java Memory Model in 500 Words or Less
+The Java Memory Model is specified in terms of actions, which include reads and writes to variables, locks and unlocks of monitors, and starting and joining with threads. The JMM defines a partial ordering called **happens-before** on all actions within the program. To guarantee that the thread executing action B can see the results of action A (whether or not A and B occur in different threads), there must be a happens-before relationship between A and B. In the absence of a happens-before ordering between two operations, the JVM is free to reorder them as it pleases.
+
+A data race occurs when a variable is read by more than one thread, and written by at least one thread, but the reads and writes are not ordered by happens-before. A correctly synchronized program is one with no data race; correctly synchronized programs exhibit sequential consistency, meaning that all actions within the program appear to happen in a fixed, global order.
+
+:cheese:The rules for happens-before are:
+- Program order rule. Each action in a thread happens-before every action in that thread that comes later in the program order.
+- Monitor lock rule. An unlock on a monitor lock happens-before every subsequent lock on that same monitor lock.[<sup>[1]</sup>](#16.1.3.1)
+- Volatile variable rule. A write to a volatile field happens-before every subsequent read of that same field.[<sup>[2]</sup>](#16.1.3.2)
+- Thread start rule. A call to Thread.start on a thread happens-before every action in the started thread.
+- Thread termination rule. Any action in a thread happens-before any other thread detects that thread has terminated, either by successfully return from Thread.join or by Thread.isAlive returning false.
+- Interruption rule. A thread calling _interrupt_ on another thread happens-before the interrupted thread detects the interrupt (either by having _InterruptedException_ thrown, or invoking _isInterrupted_ or _interrupted_)
+- Finalizer rule. The end of a constructor for an object happens-before the start of the finalizer for that object.
+- Transitivity. If A happens-before B, and B happens-before C, then A happens-before C.
+
+> <span id='16.1.3.1'>[1]</span>: Locks and unlocks on explicit Lock objects have the same memory semantics as intrinsic locks.
+
+> <span id='16.1.3.2'>[2]</span>: Reads and writes of atomic variables have the same memory semantics as volatile variables.
+
+Even though actions are only partially ordered, synchronization actions - lock acquisition and release, and reads and writes of volatile variables - are totally ordered. This makes it sensible to describe happens-before in terms of "subsequent" lock acquisitions and reads of volatile variables.
+
+Figure 16.2 illustrates the happens-before relation when two threads synchronize using a common lock. All the actions within thread A are ordered by the program order rule, as are the actions within thread B. Because A releases lock M and B subsequently acquires M, all the actions in A before releasing the lock are therefore ordered before the actions in B after acquiring the lock. When two threads synchronize on different locks, we can't say anything about the ordering of actions between them - there is no happens-before relation between the actions in the two threads.
+
+**Figure 16.2 Illustration of happens-before in the Java Memory Model**
+```puml
+@startuml
+participant ThreadA
+participant ThreadB
+hnote over ThreadA: y = 1
+hnote over ThreadA: lock M
+hnote over ThreadA: x = 1
+hnote over ThreadA: unlock M
+ThreadA --> ThreadB: Everything before the unlock on M \n is visible to everything after the lock on M
+hnote over ThreadB: lock M
+hnote over ThreadB: i = x
+hnote over ThreadB: unlock M
+hnote over ThreadB: j = y
+
+@enduml
+```
+
+### 16.1.4 Piggybacking on Synchronization
+
