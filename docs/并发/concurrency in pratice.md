@@ -2622,7 +2622,7 @@ public class OneShotLatch {
           sync.releaseShared(0);
      }
 
-     public void await() throws InterrputedException {
+     public void await() throws InterruptedException {
           sync.acquireSharedInterruptibly(0);
      }
 
@@ -3013,7 +3013,7 @@ These factors can prevent a thread from seeing the most up-to-date value for a v
 ### 16.1.1 Platform Memory Models
 In a shared-memory multiprocessor architecture, each processor has its own cache that is periodically reconciled with main memory. Processor architectures provide varying degrees of cache coherence; some provide minimal guarantees that allow different processors to see different values for the same memory location at virtually any time. The operating system, compiler, and runtime (and sometimes, the program, too) must make up the difference between what the hardware provides and what thread safety requires.
 
-An architecture's memory model tells programs what guarantees they can expect from the memory system, and specifies the special instructions required (called memory barriers or fences) to get the additional memory coordination guarantees required when sharing data. In order to shield the Java developer from the differences between memory models across architectures, Java provides its own memory model, and the JVM deals with the differences between the JMM and the underlying platform's memory model by inserting memory barriers at the appropriate place.
+An architecture's memory model tells programs what guarantees they can expect from the memory system, and specifies the special instructions required (called memory barriers or fences) to get the additional memory coordination guarantees required when sharing data. **In order to shield the Java developer from the differences between memory models across architectures, Java provides its own memory model, and the JVM deals with the differences between the JMM and the underlying platform's memory model by inserting memory barriers at the appropriate place**.
 
 One convenient mental model for program execution is to imagine that there is a single order in which the operations happen in a program, regardless of what processor they execute on, and that each read of a variable will see the last write in the execution order to that variable by any processor. This happy, if unrealistic, model is called **sequential consistency.** Software developers often mistakenly assume sequential consistency, but no modern multiprocessor offers sequential consistency and the JMM does not either. 
 
@@ -3111,4 +3111,195 @@ hnote over ThreadB: j = y
 ```
 
 ### 16.1.4 Piggybacking on Synchronization
+Because of the strength of the happens-before ordering, you can sometimes piggyback on the visibility properties of an existing synchronization. This entails combining the program order rule for happens-before with one of the other ordering rules (usually the monitor lock or volatile variable rule) to order accesses to a variable not otherwise guarded by a lock. This technique is very sensitive to the order in which statements occur and is therefore quite fragile; it is an advanced technique that should be reserved for squeezing the last drop of performance out of the most performance critical classes like ReentrantLock.
+
+The implementation of the protected AbstractQueuedSynchronizer methods in FutureTask illustrates piggybacking. AQS maintains an integer of synchronizer state that FutureTask uses to store the task state: running, completed, or cancelled. But FutureTask also maintains additional variables, such as the result of the computation. When one thread calls set to save the result and another thread calls get to retrieve it, the two had better be ordered by happens-before. This could be done by making the reference to the result volatile, but it is possible to exploit existing synchronization to achieve the same result at lower cost.
+
+FutureTask is carefully crafted to ensure that a successful call to _tryReleaseShared_ always happens-before a subsequent call th _tryAcquireShared_; _tryReleaseShared_ always writes to a volatile variable that is read by _tryAcquireShared_. Listing 16.2 shows the innerSet and innerGet methods that are called when the result is saved or retrieved; since innerSet writes result before calling releaseShared (which calls tryReleaseShared) and innerGet reads result after calling acquireShared (which calls tryAcquireShared), the program order rule combines with the volatile variable rule to ensure that the write of result in innerSet happens-before the read of result in innerGet.
+
+:dizzy_face:**Listing 16.2 Inner Class of FutureTask Illustrating Synchronization Piggybacking**
+```java
+//Inner class of FutureTask
+private final class Sync extends AbstractQueuedSynchronizer {
+     private static final int RUNNING = 1, RAN = 2, CANCELLED = 4;
+     private V result;
+     private Exception exception;
+
+     void innerSet(V v) {
+          while(true) {
+               int s = getState();
+               if(ranOrCancelled(s)) {
+                    return;
+               }
+               if(compareAndSetState(s, RAN)){
+                    break;
+               }
+          }
+          result = v;
+          releaseShared(0);
+          done();
+     }
+
+     V innerGet() throws InterruptedException, ExecutionException {
+          acquireSharedInterruptibly(0);
+          if(getState() == CANCELLED) {
+               throw new CancellationException();
+          }
+          if(exception != null){
+               throw new ExecutionException(exception);
+          }
+          return result;
+     }
+}
+```
+ 
+We call this technique "piggybacking" because it uses an existing happens-before ordering that was created for some other reason to ensure the visibility of object X, rather than creating a happens-before ordering specifically for publishing X.
+
+Piggybacking of the sort employed by FutureTask is quire fragile and should not be undertaken casually. However, in some cases piggybacking is perfectly reasonable, such as when a class commits to a happens-before ordering between methods as part of its specification(当方法之间的happens-before规则作为一个类的技术规范时，使用piggybacking是非常合理的). For example, safe publication using a BlockingQueue is a form of piggybacking. One thread putting an object on a queue and another thread subsequently retrieving it constitutes safe publication because there is guaranteed to be sufficient internal synchronization in a BlockingQueue implementation to ensure that the enqueue happens-before the dequeue.
+
+Other happens-before orderings guaranteed by the class library include:
+- Placing an item in a thread-safe collection happens-before another thread retrieves that item from the collection;
+- Counting down on a CountDownLatch happens-before a thread returns from _await_ on the latch;
+- Releasing a permit to a Semaphore happens-before acquiring a permit from that same Semaphore;
+- Actions taken by the task represented by a _Future_ happens-before another thread successfully returns from _Future.get_;
+- Submitting a Runnable or Callable to an Executor happens-before the task begins execution; and
+- A thread arriving at a CyclicBarrier or Exchanger happens-before the other threads are released from that same barrier or exchange point. If CyclicBarrier uses a barrier action, arriving at the barrier happens-before the barrier action, which in turn happens-before threads are released from the barrier.
+
+## 16.2 Publication
+Chapter 3 explored how an object could be safely or improperly published. The safe publication techniques described there derive their safety from guarantees provided by the JMM; the risks of improper publication are consequences of the absence of a happens-before ordering between publishing a shared object and accessing it from another thread.
+
+### 16.2.1 Unsafe Publication
+The possibility of reordering in the absence of a happens-before relationship explains why publishing an object without adequate synchronization can allow another thread to see a partially constructed object (see Section 3.5). Initializing a new object involves writing to variables - the new object's fields. Similarly, publishing a reference involves writing to another variable - the reference to the new object. If you do not ensure that publishing the shared reference happens-before another thread loads that shared reference, then the write of the reference to the new object can be reordered (from the perspective of the thread consuming the object) with the writes to its fields. In that case, another thread could see an up-to-date value for the object reference but out-of-date values for some or all of that object's state - a partially constructed object.
+
+Unsafe publication can happen as a result of an incorrect lazy initialization, as shown in Figure 16.3. At first glance, the only problem here seems to be the race condition described in Section 2.2.2. Under certain circumstances, such as when all instances of the Resource are identical, you might be willing to overlook these (along with the inefficiency of possibly creating the Resource more than once). Unfortunately, even if these defects are overlooked, UnsafeLazyInitialization is still not safe, because another thread could observe a reference to a partially constructed Resource.
+
+:disappointed:**Listing 16.3 Unsafe Lazy Initialization. Don't Do this**
+```java
+@NotThreadSafe
+public class UnsafeLazyInitialization {
+     private static Resource resource;
+
+     public static Resource getInstance() {
+          if (resource = null) {
+               resource = new Resource; //unsafe publication
+          }
+          return resource;
+     }
+}
+```
+
+Suppose thread A is the first to invoke getInstance. It sees that resource is null, instantiates a new Resource, and sets resource to reference it. When thread B later calls getInstance, it might see that resource already has a non-null value and just use the already constructed Resource. This might look harmless at first, but there is no happens-before ordering between the writing of resource in A and the reading of resource in B. A data race has been used to publish the object, and therefore B is not guaranteed to see the correct state of the Resource.
+
+The Resource constructor changes the fields of the freshly allocated Resource from their default values (written by the object constructor) to their initial values. Since neither thread used synchronization, B could possible see A's actions in a different order than A performed them. So even thought A initialized the Resource before setting resource to reference it, B could see the write to resource as occurring before the writes to the fields of the Resource.(B可能在Resource设置对象属性之前看到resource的引用) B could thus see a partially constructed Resource that may well be in an invalid state, and whose state may unexpectedly change later.
+
+:cheese: With the exception of immutable objects, it is not safe to use an object that has been initialized by another thread unless the publication happens-before the consuming thread uses it.
+
+### 16.2.2 Safe Publication
+UnsafeLazyInitialization can be fixed by making the getInstance method synchronized, as shown in Listing 16.4. 
+**Listing 16.4 Thread safe Lazy Initialization**
+```java
+@ThreadSafe
+public class SafeLazyInitialization {
+     private static Resource resource;
+
+     public synchronized static Resource getInstance() {
+          if(resource == null) {
+               resource = new Resource();
+          }
+          return resource;
+     }
+}
+```
+
+The treatment of static fields with initializers (or fields whose value is initialized in a static initialization block) is somewhat special and offers additional thread-safety guarantees. Static initializers are run by the JVM at class initialization time, after class loading but before the class is used by any thread. Because the JVM acquires a lock during initialization and this lock is acquired by each thread at least once to ensure that the class has been loaded, memory writes made during static initialization are automatically visible to all threads. Thus statically initialized objects require no explicit synchronization either during construction or when being referenced. However, this applies only to the as-constructed state - if the object is mutable, synchronization is still required by both readers and writers to make subsequent modifications visible and to avoid data corruption.
+
+**Listing 16.5 Eager Initialization**
+```java
+@ThreadSafe
+public class EagerInitialization {
+     private static Resource resource = new Resource();
+     public static Rescue getResource() {
+          return resource;
+     }
+}
+```
+
+Using eager initialization, shown in Listing 16.5, eliminates the synchronization cost incurred on each call to getInstance in SafeLazyInitialization. This technique can be combined with the JVM's lazy class loading to create a lazy initialization technique that does not require synchronization on the common code path. The lazy initialization holder class idiom in Listing 16.6 uses a class whose only purpose is to initialize the Resource. The JVM defers initializing the ResourceHolder class until it is actually used, and because the Resource is initialized with a static initializer, no additional synchronization is need. The first call the getResource by any thread causes ResourceHolder to be loaded and initialized, at which time the initialization of the Resource happens through the static initializer.
+
+**Listing 16.6 Lazy Initialization Holder Class Idiom**
+```java
+@ThreadSafe
+public class ResourceFactory {
+     private static class ResourceHolder {
+          public static Resource resource = new Resource();
+     }
+
+     public static Resource getResource(){
+          return ResourceHolder.resource;
+     }
+}
+```
+
+### 16.2.4 Double-checked Locking
+Double checked locking (DCL) is an anti-pattern as shown in Listing 16.7. 
+
+:disappointed:**Listing 16.7 Double-checked-locking Anti-pattern. Don't Do this**
+```java
+@NotThreadSafe
+public class DoubleCheckedLocking {
+     private static Resource resource;
+
+     public static Resource getInstance() {
+          if (resource == null) {
+               synchronized (DoubleCheckedLocking.class) {
+                    if(resource == null) {
+                         resource = new Resource();
+                    }
+               }
+          }
+          return resource;
+     }
+}
+```
+
+The real problem with DCL is the assumption that the worst thing that can happen when reading a shared object reference without synchronization is to erroneously see a stale value (in this case, null); in that case the DCL idiom compensates for this risk by trying again with the lock held. But the worst case is actually considerably worse - it is possible to see a current value of the reference but stale values for the object's state, meaning that object could be seen to be in an invalid or incorrect state.(就是说线程看到的resource值可能是过期的)
+
+Subsequent changes in the JMM (Java 5.0 and later) have enabled DCL to work if resource is made volatile, and the performance impact of this is small since volatile reads are usually only slightly more expensive than nonvolatile reads. **However, this is an idiom whose utility has largely passed - the forces that motivated it (slow uncontended synchronization, slow JVM startup) are no longer in play, making it less effective as an optimization. The lazy initialization holder idiom offers the same benefits and is easier to understand.**
+
+## 16.3 Initialization Safety
+The guarantee of initialization safety allows properly constructed immutable objects to be safely shared across threads without synchronization, regardless of how they are published, even if published using a data race. (This means that UnsafeLazyInitialization is actually safe if Resource is immutable.)
+
+:balance_scale: Initialization safety guarantees that for properly constructed objects, all threads will see the correct values of final fields that were set by the constructor, regardless of how the object is published. Further, any variables that can be reached through a final field of a properly constructed object (such as elements of a final array or the contents of a HashMap referenced by a final field) are also guaranteed to be visible to other threads. [<sup>[1]</sup>](#16.3.1) 
+
+> <span id='16.3.1'>[1]</span>: This applies only to objects that are reachable only through final fields of the object under construction.
+
+For objects with final fields, initialization safety prohibits reordering any part of construction with the initial load of a reference to that object. All writes to final fields made by the constructor, as well as to any variables reachable through those fields, become "frozen" when the constructor completes, and any thread that obtains a reference to that object is guaranteed to see a value that is at least as up to date as the frozen value. **Writes that initialize variables reachable through final fields are not reordered with operations follwing the post-construction freeze.(是什么意思？)**
+
+> Writes that initialize final fields will not be reordered with operations following the freeze associated with the constructor.
+
+Initialization safety means that SafeStates in Listing 16.8 could be safely published even through unsafe lazy initialization or stashing a reference to a SafeStates in a public static field with no synchronization, even though it uses no synchronization and relies on the non-thread-safe HashSet.
+
+**Listing 16.8 Initialization Safety for Immutable Objects**
+```java
+@ThreadSafe
+public class SafeStates {
+     private final Map<String, String> states;
+
+     public SafeStates() {
+          states = new HashMap<>();
+          states.put("alaska", "AK");
+          states.put("alabama", "AL");
+          ...
+          states.put("wyoming", "WY");
+     }
+
+     public String getAbbreviation(String s) {
+          return states.get(s);
+     }
+}
+```
+
+However, a number of small changes to SafeStates would take away its thread safety. If states were not final, or if any method other than the constructor modified its contents, initialization safety would not be strong enough to safely access SafeStates without synchronization. If SafeStates had other non-final fields, other threads might still see incorrect values of those fields. And allowing the object to escape during constrcution invalidates the initialization-safety guarantee.
+
+:camel: Initialization safety makes visibility guarantees only for the values that are reachable through final fields as of the time the constructor finishes. For values reachable through non-final fields, or values that may change after construction, you must use synchronization to ensure visibility.
 
