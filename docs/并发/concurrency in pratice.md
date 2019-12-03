@@ -3275,7 +3275,7 @@ The guarantee of initialization safety allows properly constructed immutable obj
 
 For objects with final fields, initialization safety prohibits reordering any part of construction with the initial load of a reference to that object. All writes to final fields made by the constructor, as well as to any variables reachable through those fields, become "frozen" when the constructor completes, and any thread that obtains a reference to that object is guaranteed to see a value that is at least as up to date as the frozen value. **Writes that initialize variables reachable through final fields are not reordered with operations follwing the post-construction freeze.(是什么意思？)**
 
-> Writes that initialize final fields will not be reordered with operations following the freeze associated with the constructor.
+> Writes that initialize final fields will not be reordered with operations following the freeze associated with the constructor. (final成员变量的写操作不会和相关构造函数中其他冻结操作发生重排，其他冻结操作比如给其他final变量赋值)
 
 Initialization safety means that SafeStates in Listing 16.8 could be safely published even through unsafe lazy initialization or stashing a reference to a SafeStates in a public static field with no synchronization, even though it uses no synchronization and relies on the non-thread-safe HashSet.
 
