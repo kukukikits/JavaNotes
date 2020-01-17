@@ -100,8 +100,8 @@ The method area is created on virtual machine start-up. Although the method area
 The following exceptional condition is associated with the method area:
 - If memory in the method area cannot be made available to satisfy an allocation request, the Java Virtual Machine throws an _OutOfMemoryError_.
 
-### 2.5.2 Run-Time Constant Pool
-A _run-time constant pool_ is a per-class or per-interface run-time representation of the _constant_pool_ table in a _class_ file ($4.4). It contains several kinds of constants, ranging from numeric literals known at compile-time to method and field references that must be resolved at run-time.
+### 2.5.5 Run-Time Constant Pool
+**A _run-time constant pool_ is a per-class or per-interface run-time representation of the _constant_pool_ table in a _class_ file** ($4.4). It contains several kinds of constants, ranging from numeric literals known at compile-time to method and field references that must be resolved at run-time.
 
 Each run-time constant pool is allocated from the Java Virtual Machine's method area (\$2.5.4). The run-time constant pool for a class or interface is constructed when the class or interface is created (\$5.3) by the Java Virtual Machine.
 
@@ -116,6 +116,39 @@ The following exceptional conditions are associated with native method stacks:
 - If the computation in a thread requires a larger native method stack than is permitted, the Java Virtual Machine throws a _StackOverflowError_.
 - If native method stacks can be dynamically expanded and native method stack expansion is attempted but insufficient memory can be made available, or if insufficient memory can be made available to create the initial native method stack for a new thread, the Java Virtual Machine throws an _OutOfMemoryError_.
 
+## 2.6 Frames
+**A frame is used to store data and partial results, as well as to perform dynamic linking, return values for methods, and dispatch exceptions.**
+
+A new frame is created each time a method is invoked. A frame is destroyed when its method invocation completes, whether that completion is normal or abrupt (it throws an uncaught exception). Frames are allocated from the Java Virtual Machine stack ($2.5.2) of the thread creating the frame. Each frame has its own array of local variables ($2.6.1), its own operand stack ($2.6.2), and a reference to the run-time constant pool ($2.5.5) of the class of the current method.
+
+> A frame may be extended with additional implementation-specific information, such as debugging information
+
+The sizes of the local variables array and the operand stack are determined at compile-time and are supplied along with the code for the method associated with the frame ($4.7.3). Thus the size of the frame data structure depends only on the implementation of the Java Virtual Machine, and the memory for these structures can be allocated simultaneously on method invocation.
+
+Only one frame, the frame for the executing method, is active at any point in a given thread of control. This frame is referred to as the **current frame**, and its method is known as the **current method**. The class in which the current method is defined is the **current class**. Operations on local variables and the operand stack typically with reference to the current frame.
+
+A frame ceases to be current if its method invokes another method or if its method completes. When a method is invoked, a new frame is created and becomes current when control transfers to the new method. On method return, the current frame passes back the result fo its method invocation, if any, to the previous frame. The current frame is then discarded as the previous frame becomes the current one.
+
+Note that a frame created by a thread is local to that thread can cannot be referenced by any other thread.
+
+### 2.6.1 Local Variables
+**Each frame (\$2.6) contains an array of variables known as its local variables**. The length of the local variable array of a frame is determined at compile-time and supplied in the binary representation of a class or interface along with the code for the method associated with the frame ($4.7.3).
+
+A single local variable can hold a value of type **boolean, byte, char, short, int, float, reference, or returnAddress**. A pair of local variables can hold a value of type long or double.
+
+Local variables are addressed by indexing. The index of the first local variable is 0. An integer is considered to be an index into the local variable array if and only if that integer is between 0 and one less than the size of the local variable array.
+
+A value of type *long* or type *double* occupies two consecutive local variables. Such a value may only be addressed using the lesser index. For example, a value of type double store in the local variable array at index $n$ actually occupies the local variables with indices $n$ and $n+1$; however, the local variable at index $n+1$ cannot be loaded from. It can be stored into. However, doing so invalidates the contents of local variable $n$. (n+1下标的本地变量不能加载，但是可以写入，但是写入的后果就是下标为n的数据就无效了)
+
+The Java Virtual Machine does not require $n$ to be even. In intuitive terms, values of type _long_ and _double_ need not be 64-bit aligned in the local variables array. Implementors are free to decide the appropriate way to represent such values using the two local variables reserved for the value.
+
+The Java Virtual Machine uses local variables to pass parameters on method invocation. On class method invocation, any parameters are passed in consecutive local variables staring from local variable 0. On instance method invocation, local variable 0 is always used to pass a reference to the object on which the instance method is being invoked (**this** in the Java programming language). Any parameters are subsequently passed in consecutive local variables staring from local variable 1.
+
+
+### 2.6.2 Operand Stacks
+**Each frame (\$2.6) contains a last-in-first-out (LIFO) stack known as its operand stack.** The maximum depth of the operand stack of a frame is determined at compile-time and is supplied along with code for the method associated with the frame ($4.7.3).
+
+Where it is clear by context, we will sometimes refer to the operand stack of the current frame as simply the operand stack.
 
 
 
