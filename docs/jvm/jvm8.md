@@ -150,7 +150,109 @@ The Java Virtual Machine uses local variables to pass parameters on method invoc
 
 Where it is clear by context, we will sometimes refer to the operand stack of the current frame as simply the operand stack.
 
+The operand stack is empty when the frame that contains it is created. The Java Virtual Machine supplies instructions to load constants or values from local variables or fields onto the operand stack. Other Java Virtual Machine instructions take operands from the operand stack, operate on them, and push the result back onto the operand stack. The operand stack is also used to prepare parameters to be passed to methods and to receive method results.
+
+For example, the **iadd** instruction adds two int values together. It requires that the int values to be added be the top two values of the operand stack, pushed there by previous instructions. Both of the int values are popped from the operand stack. They are added, and their sum is pushed back onto the operand stack. Sub-computations may be nested on the operand stack, resulting in values that can be used by the encompassing computation.
+
+Each entry on the operand stack can hold a value of any Java Virtual Machine type, including a value of type **long** or type **double**.
+
+Values from the operand stack must be operated upon in ways appropriate to their types. It is not possible, for example, to push two **int** values and subsequently treat them as a **long** or to push two **float** values and subsequently add them with an **iadd** instruction. A small number of Java Virtual Machine instructions (the **dup** instructions and **swap**) operate on run-time data areas as raw values without regard to their specific types; these instructions are defined in such a way that they cannot be used to modify or break up individual values. These restrictions on operand stack manipulation are enforced through **class** file verification($4.10).
+
+At any point in time, an operand stack has an associated depth, where a value of type **long** or **double** contributes two units to the depth and a value of any other type contributes one unit.
+
+### 2.6.3 Dynamic Linking 
+Each frame (\$2.6) contains a reference to the run-time constant pool ($2.5.5) for the type of the current method to support **dynamic linking** of the method code. The **class** file code for a method refers to methods to be invoked and variables to be accessed via symbolic references. Dynamic linking translates these symbolic method references into concrete method references, loading classes as necessary to resolve as-yet-undefined symbols, and translates variable accesses into appropriate offsets in storage structures associated with the run-time location of these variables.
+
+This late binding of the methods and variables makes changes in other classes that a method uses less likely to break this code.
+这种方法和变量的后期绑定，即使在方法内部调用的其他类的方法/变量等发生了变化，也不会破坏当前方法的动态链接。（应该就是这个意思吧）
+
+### 2.6.4 Normal Method Invocation Completion 方法正常返回？
+A method invocation **completes normally** if that invocation does not cause an exception (\$2.10) to be thrown, either directly from the Java Virtual Machine or as a result of executing an explicit **throw** statement. If the invocation of the current method completes normally, then a value may be returned to the invoking method. This occurs when the invoked method executes one of the return instructions (\$2.11.8), the choice of which must be appropriate for the type of the value being returned (if any).
+
+The current frame (\$2.6) is used in this case to restore the state of the invoker, including its local variables and operand stack, with the program counter of the invoker appropriately incremented to skip past the method invocation instruction. 
+在这种情况下，使用当前帧(§2.6)来恢复调用程序的状态，包括它的局部变量和操作数栈，并适当增加调用程序的程序计数器以跳过方法调用指令。
+Execution then continues normally in the invoking method's frame with the returned value (if any) pushed onto the operand stack of that frame.
+
+### 2.6.5 Abrupt Method Invocation Completion 异常返回
+A method invocation ***completes abruptly*** if execution of a Java Virtual Machine instruction within the method causes the Java Virtual Machine to throw an exception (§2.10), and that exception is not handled within the method. Execution of an ***athrow*** instruction (§***athrow***) also causes an exception to be explicitly thrown and, if the exception is not caught by the current method, results in abrupt method invocation completion. A method invocation that completes abruptly never returns a value to its invoker.
+也就是说方法抛出了异常，而调用者没有捕获异常，则方法是异常返回的。
+
+## 2.7 Representation of Objects
+The Java Virtual Machine does not mandate any particular internal structure for objects.
+> In some of Oracle's implementations of the Java Virtual Machine, a reference to a class instance is a pointer to a *handle* that is itself a pair of pointers: one to a table containing the methods of the object and a pointer to the **Class** object that represents the type of the object, and the other to the memory allocated from the heap for the object data.
+
+## 2.8 Floating-Point Arithmetic
+The Java Virtual Machine incorporates a subset of the floating-point arithmetic specified in IEEE Standard for Binary Floating-Point Arithmetic (ANSI/IEEE Std. 754-1985, New York).
+
+## 2.9 Special Methods
+At the level of the Java Virtual Machine, every constructor written in the Java programming language (JLS §8.8) appears as an ***instance initialization method*** that has the special name **\<init\>**. This name is supplied by a compiler. Because that name **\<init\>** is not a valid identifier, it cannot be used directly in a program written in the Java programming language. Instance initialization methods may be invoked only within the Java Virtual Machine by the **invokespecial** instruction (§invokespecial), and they may be invoked only on uninitialized class instances. An instance initialization method takes on the access permissions (JLS §6.6) of the constructor from which it was derived.
+
+A class or interface has at most one *class or interface initialization method* and is initialized (§5.5) by invoking that method. The initialization method of a class or interface has the special name **\<clinit\>**, takes no arguments, and is void (§4.3.3).
+
+> Other methods named \<clinit\> in a *class* file are of no consequence. They are not class or interface initialization methods. They cannot be invoked by any Java Virtual Machine instruction and are never invoked by the Java Virtual Machine itself.
+
+In a **class** file whose version number is 51.0 or above, the method must additionally have its **ACC_STATIC** flag (§4.6) set in order to be the class or interface initialization method.
+> This requirement was introduced in Java SE 7. In a class file whose version number is 50.0 or below, a method named \<clinit\> that is void and takes no arguments is considered the class or interface initialization method regardless of the setting of its **ACC_STATIC** flag.
+
+The name **\<clinit\>** is supplied by a compiler. Because the name **\<clinit\>** is not a valid identifier, it cannot be used directly in a program written in the Java programming language. Class and interface initialization methods are invoked implicitly by the Java Virtual Machine; they are never invoked directly from any Java Virtual Machine instruction, but are invoked only indirectly as part of the class initialization process.
+
+A method is *signature polymorphic* if all of the following are true:
+- It is declared in the *java.lang.invoke.MethodHandle* class
+- It has a single formal parameter of type *Object[]*.
+- It has a return type of *Object*.
+- It has the ACC_VARARGS and ACC_NATIVE flags set.
+
+> In java SE 8, the only signature polymorphic methods are the *invoke* and *invokeExact* methods of the class *java.lang.invoke.MethodHandle*.
+
+The Java Virtual Machine gives special treatment to signature polymorphic methods in the ***invokevirtual*** instruction (§invokevirtual), in order to effect invocation of a *method handle*. **A method handle is a strongly typed, directly executable reference to an underlying method, constructor, field, or similar low-level operation (§5.4.3.5), with optional transformations of arguments or return values.** These transformations are quite general, and include such patterns as conversion, insertion, deletion, and substitution. See the *java.lang.invoke* package in the Java SE platform API for more information.
 
 
+## 2.10 Exceptions
+An exception in the Java Virtual Machine is represented by an instance of the class **Throwable** or one of its subclasses. Throwing an exception results in an immediate non-local transfer of control from the point where the exception was thrown.
 
+Most exceptions occur synchronously as a result of an action by the thread in which they occur. An asynchronous exception, by contrast, can potentially occur at any point in the execution of a program. The Java Virtual Machine throws an exception for one of three reasons:
+- An ***athrow*** instruction (§athrow) was executed.
+- An abnormal execution condition was synchronously detected by the Java Virtual Machine. These exceptions are not thrown at an arbitrary point in the program, but only synchronously after execution of an instruction that either:
+  - Specifies the exception as a possible result, such as:
+    - When the instruction embodies an operation that violates the semantics of the Java programming language, for example indexing outside the bounds of an array.
+    - When an error occurs in loading or linking part of the program.
+  - Causes some limit on a resource to be exceeded, for example when too much memory is used.
+- An asynchronous exception occurred because；
+  - The *stop* method of class *Thread* or *ThreadGroup* was invoked, or
+  - An internal error occurred in the Java Virtual Machine implementation.
+  The *stop* methods may be invoked by one thread to affect another thread or all the threads in a specified thread group. They are asynchronous because they may occur at any point in the execution of the other thread or threads. An internal error is considered asynchronous (§6.3).
+
+A Java virtual Machine may permit a small but bounded amount of execution to occur before an asynchronous exception is thrown. This delay is permitted to allow optimized code to detect and throw these exceptions at points where it is practical to handle them while obeying the semantics of the Java programming language.
+
+Exceptions thrown by the Java Virtual Machine are precise: when the transfer of control takes place, all effects of the instructions executed before the point from which the exception is thrown must appear to have taken place. No instructions that occur after the point from which the exception is thrown may appear to have been evaluated. If optimized code has speculatively executed some of the instructions which follow the point at which the exception occurs, such code must be prepared to hide this speculative execution from the user-visible state of the program.
+
+Each method in the Java Virtual Machine may be associated with zero or more **exception handlers**. An exception handler specifies the range of offsets into the Java Virtual Machine code implementing the method for which the exception handler is active, describes the type of exception that the exception handler is able to handle, and specifies the location of the code that is to handle that exception. An exception matches an exception handler if the offset of the instruction that caused the exception is in the range of offsets of the exception handler and the exception type is the same class as or a subclass of the class of exception that the exception handler handles. When an exception is thrown, the Java Virtual Machine searches for a matching exception handler in the current method. If a matching exception handler is found, the system branches to the exception handling code specified by the matched handler.
+
+If no such exception handler is found in the current method, the current method invocation completes abruptly(§2.6.5). On abrupt completion, the operand stack and local variables of the current method invocation are discarded, and its frame is popped, reinstating the frame of the invoking method. The exception is then rethrown in the context of the invoker's frame and so on, continuing up the method invocation chain. If no suitable exception handler is found before the top of the method invocation chain is reached, the execution of the thread in which the exception was thrown is terminated.
+
+The order in which the exception handlers of a method are searched for a match is important. Within a **class** file, the exception handlers for each method are stored in a table (§4.7.3). At run time, when an exception is thrown, the Java Virtual Machine searches the exception handlers of the current method in the order that they appear in the corresponding exception handler table in the **class** file, starting from the beginning of the table.
+
+Note that the Java Virtual Machine does not enforce nesting of or any ordering of the exception table entries of a method. The exception handling semantics of the Java programming language are implemented only through cooperation with the compiler (§3.12). When **class** files are generated by some other means, the defined search procedure ensures that all Java Virtual Machine implementations will behave consistently.
+
+## 2.11 Instruction Set Summary
+A Java Virtual Machine instruction consists of a one-byte **opcode** specifying the operation to be performed, followed by zero or more **operands** supplying arguments or data that are used by the operation. Many instructions have no operands and consist only of an opcode.
+
+Ignoring exceptions, the inner loop of a Java Virtual Machine interpreter is effectively
+```java
+do {
+  atomically calculate pc and fetch opcode at pc;
+  if (operands) fetch operands;
+  execute the action for the opcode;
+} while (there is more to do);
+```
+The number and size of the operands are determined by the opcode. If an operand is more than one byte in size, then it is stored in big-endian order -high-order byte first. For example, and unsigned 16-bit index into the local variables is stored as two unsigned bytes, $byte1$ and $byte2$, such that its values is $(byte1 <<8)|byte2$.
+
+The bytecode instruction stream is only single-byte aligned. The two exceptions are the *lookupswitch* and *tableswitch* instructions (§lookupswitch,§tableswitch), which are padded to force internal alignment of some of their operands on 4-byte boundaries.
+
+> The decision to limit the Java Virtual Machine opcode to a byte and to forgo data alignment within compiled code reflects a conscious bias in favor of compactness, possibly at the cost of some performance in naive implementations. A one-byte opcode also limits the size of the instruction set. Not assuming data alignment means that immediate data larger than a byte must be constructed from bytes at run time on many machines.
+
+### 2.11.1 Types and the Java Virtual Machine
+Most of the instructions in the Java Virtual Machine instruction set encode type information about the operations they perform. For instance, the **iload** instruction (§iload) loads the contents of a local variable, which must be an **int**, onto the operand stack. The **fload** instruction (§fload) does the same with a **float** value. The two instructions may have identical implementations, but have distinct opcodes.
+
+For the majority of typed instructions, the instruction type is represented explicitly in the opcode mnemonic by a letter: $i$ for an **int** operation, $l$ for **long**, $s$ for **short**, $b$ for **byte**, $c$ for **char**, $f$ for **float**, $d$ for double, and $a$ for **reference**.
 
