@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  labels:
+    app: my-server
+spec:
+  ports:
+  - port: 3306
+  selector:
+    app: my-server
+    tier: mysql
+  clusterIP: None
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+ name: my-server-mysql-pv-claim
+ labels:
+   app: my-server
+spec:
+ storageClassName: standard
+ volumeMode: Filesystem
+ accessModes:
+ - ReadWriteOnce
+ resources:
+   requests:
+     storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-server-mysql
+  labels:
+    app: my-server
+spec:
+  selector:
+    matchLabels:
+      app: my-server
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: my-server
+        tier: mysql
+    spec:
+      containers:
+      - image: mysql:5.7.30
+        name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        - name: MYSQL_DATABASE
+          value: my-server
+        args:
+        - "--character-set-server=utf8mb4"
+        - "--collation-server=utf8mb4_unicode_ci"
+        ports:
+        - containerPort: 3306
+          name: mysql
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+        - name: init-data
+          readOnly: true
+          mountPath: /docker-entrypoint-initdb.d
+        - name: mysql-conf
+          mountPath: /etc/mysql/conf.d
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: my-server-mysql-pv-claim
+      - name: init-data
+        configMap:
+          name: init-data
+      - name: mysql-conf
+        configMap:
+          name: mysql.cnf
+      imagePullSecrets:
+      - name: registry.docker.com

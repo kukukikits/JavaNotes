@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-server
+  labels:
+    app: my-server
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: my-server
+    tier: web-server
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+ name: my-server-log-storage-pv-claim
+ labels:
+   app: my-server
+spec:
+ storageClassName: standard
+ volumeMode: Filesystem
+ accessModes:
+ - ReadWriteOnce
+ resources:
+   requests:
+     storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-server
+spec:
+  selector:
+    matchLabels:
+        app: my-server
+        tier: web-server
+  replicas: 1
+  template:
+    metadata:
+        labels:
+            app: my-server
+            tier: web-server
+    spec:
+        initContainers:
+        - name: init-mysql
+          image: busybox:1.28
+          command: ['sh', '-c', "until nslookup mysql-service; do echo waiting for service mysql-service; sleep 2; done"]
+        containers:
+        - name: my-server
+          # 镜像地址占位符
+          image: $placeHolder
+          env:
+          - name: SERVER_PORT
+            value: '80'
+          - name: ARGS
+            value: '--spring.profiles.active=prod'
+          - name: MYSQL_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mysql-pass
+                key: password
+          - name: MYSQL_DATABASE
+            value: my-server
+          imagePullPolicy: Always
+          ports:
+          - protocol: TCP
+            # 宿主机器上开的端口
+            hostPort: 8080
+            containerPort: 80
+          volumeMounts:
+          - name: my-server-log-storage
+            mountPath: /log
+        imagePullSecrets:
+          - name: registry.docker.com
+        volumes:
+          - name: my-server-log-storage
+            persistentVolumeClaim:
+                claimName: my-server-log-storage-pv-claim
+        # 选择节点
+        nodeSelector:
+            kubernetes.io/hostname: docker.123.com

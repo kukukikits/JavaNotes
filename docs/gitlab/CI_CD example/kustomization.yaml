@@ -1,0 +1,19 @@
+secretGenerator:
+- name: mysql-pass
+  literals:
+  - password=mysql-password-here
+configMapGenerator:
+# mysql数据库的初始化数据
+- name: init-data
+  # 需要在项目根目录下准备这两个压缩文件，一个是建表的，一个是数据初始化的
+  files:
+  - a-schema.sql.gz
+  - b-data.sql.gz
+# mysql的配置文件
+- name: mysql.cnf
+  files:
+  - kubernetes/mysql.cnf
+
+resources:
+- kubernetes/mysql-deployment.yaml
+- kubernetes/deployment.yaml
