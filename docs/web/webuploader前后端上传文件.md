@@ -2,7 +2,7 @@
 
 ## 前端
 
-看官方文档：
+看官方文档：http://fex.baidu.com/webuploader/demo.html
 
 ## 后端
 
@@ -10,15 +10,21 @@
 
 public class UploadDTO {
     private String type;
-
+    /**
+     * 整个文件的大小
+     */
     private Long size;
-
+    /**
+     * 分片的编号，从0开始，到chunks-1
+     */
     private Integer chunk;
 
     private String name;
 
     private String md5;
-
+    /**
+     * 分片的总数
+     */
     private Integer chunks;
 
     // Getter、Setter方法略
@@ -29,6 +35,8 @@ import java.io.*;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 import java.util.UUID;
 public class UploadService {
@@ -91,15 +99,23 @@ public class UploadService {
     private void chunkUpload(@NotBlank String fileName, @NotBlank String fileMd5,
                                @NotNull Integer chunk, @NotNull Integer chunks, @NotNull Long chunkSize,
                                @NotNull MultipartFile file) throws IOException {
-        // 分片文件上传
-
-        long seek = chunkSize * chunk;
+       // 分片文件上传
+        boolean lastChunk = chunk == chunks - 1;
         String destFilePath = UPLOAD_PATH + File.separator + fileName;
         File destFile = new File(destFilePath);
         if (!file.isEmpty()) {
-            try (RandomAccessFile randomAccessFile = new RandomAccessFile(destFile, "rw")) {
-                randomAccessFile.getChannel()
-                        .write(ByteBuffer.wrap(file.getBytes()), seek);
+            long seek = lastChunk ? fileSize - file.getSize(): file.getSize() * chunk;
+            try (RandomAccessFile randomAccessFile = new RandomAccessFile(destFile, "rw");
+                 FileChannel outChannel = randomAccessFile.getChannel();
+                 ReadableByteChannel inputChannel = file.getResource().readableChannel()){
+
+                outChannel.position(seek);
+                ByteBuffer allocate = ByteBuffer.allocate(1024 * 1024);
+                while (inputChannel.read(allocate) != -1) {
+                    allocate.flip();
+                    outChannel.write(allocate);
+                    allocate.clear();
+                }
             }
         }
     }
