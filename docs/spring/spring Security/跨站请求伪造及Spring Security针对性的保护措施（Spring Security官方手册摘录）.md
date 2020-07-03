@@ -30,18 +30,18 @@ Now pretend you authenticate to your bank’s website and then, without logging 
 ```
 
 You like to win money, so you click on the submit button. In the process, you have unintentionally transferred $100 to a malicious user. This happens because, while the evil website cannot see your cookies, the cookies associated with your bank are still sent along with the request.
-你很可能想点击Win Money的按钮来赢钱，你经不住诱惑手贱点了这个按钮。接下来，你就会毫无防备地把自己的100美元转给了恶意用户。为什么会这样呢？这个恶意网站虽然看不到你的cookies，但是他仍然能把和你银行相关的cookies随着请求发出去。（没搞懂具体是怎么把cookies发出去的）
+你很可能想点击Win Money的按钮来赢钱，你经不住诱惑手贱点了这个按钮。接下来，你就会毫无防备地把自己的100美元转给了恶意用户。为什么会这样呢？这个恶意网站虽然看不到你的cookies，但是他仍然能把和你银行相关的cookies随着请求发出去。（浏览器会自动把cookies写到表单提交请求里）
 
 Worst yet, this whole process could have been automated using JavaScript. This means you didn’t even need to click on the button. So how do we protect ourselves from such attacks?
 更蛋疼的是，这些操作可以直接使用JavaScript代码自动完成，根本就不需要你点那个赢钱的按钮。所以，我们怎么防止这样的攻击呢？？
 
-## 19.2 [Synchronizer Token Pattern令牌同步模式](https://docs.spring.io/spring-security/site/docs/5.0.6.RELEASE/reference/htmlsingle/#synchronizer-token-pattern)
+## 19.2 [Synchronizer Token Pattern同步令牌模式](https://docs.spring.io/spring-security/site/docs/5.0.6.RELEASE/reference/htmlsingle/#synchronizer-token-pattern)
 
 The issue is that the HTTP request from the bank’s website and the request from the evil website are exactly the same. This means there is no way to reject requests coming from the evil website and allow requests coming from the bank’s website. To protect against CSRF attacks we need to ensure there is something in the request that the evil site is unable to provide.
 一个重要的问题是银行网站的HTTP请求和恶意网站的HTTP请求是一模一样，就是说没有办法拒绝恶意网站的请求，同时允许银行的请求（也就是没法区分这两种请求）。所以为了阻止CSRF攻击，我们需要在请求里加一样恶意网站没办法提供的东西。
 
 One solution is to use the <a class="ulink" href="https://www.owasp.org/index.php/Cross-Site_Request_Forgery_(CSRF)_Prevention_Cheat_Sheet#General_Recommendation:_Synchronizer_Token_Pattern" target="_top">Synchronizer Token Pattern</a>. This solution is to ensure that each request requires, in addition to our session cookie, a randomly generated token as an HTTP parameter. When a request is submitted, the server must look up the expected value for the parameter and compare it against the actual value in the request. If the values do not match, the request should fail.
-一种解决方案就是令牌同步模式。这种解决方案要求每一个请求里，还有session cookie，都要包含一个随机生成的token作为HTTP参数。当请求提交时，服务器必须检查这个请求参数是否是期望的值，如果不是期望的值，那么这次请求就应该做失败处理。
+一种解决方案就是同步令牌模式。这种解决方案要求每一个请求里，还有session cookie，都要包含一个随机生成的token作为HTTP参数。当请求提交时，服务器必须检查这个请求参数是否是期望的值，如果不是期望的值，那么这次请求就应该做失败处理。
 
 We can relax the expectations to only require the token for each HTTP request that updates state. This can be safely done since the same origin policy ensures the evil site cannot read the response. Additionally, we do not want to include the random token in HTTP GET as this can cause the tokens to be leaked.
 我们可以降低一下要求，仅仅给那些改变状态的HTTP请求添加token。由于同源策略的保护，恶意网站是无法读取响应的，所以我们可以安全地这样干。另外还有一点，不要使用GET请求，因为这样会把token暴露在url里。
@@ -59,17 +59,19 @@ amount=100.00&routingNumber=1234&account=9876&_csrf=<secure-random>
 ```
 
 You will notice that we added the _csrf parameter with a random value. Now the evil website will not be able to guess the correct value for the _csrf parameter (which must be explicitly provided on the evil website) and the transfer will fail when the server compares the actual token to the expected token.
-你可能已经注意到我们把随即值放在了_csrf参数里。现在恶意网站就没办法知道正确的_csrf值（恶意网站必须提供正确的_csrf值来进行伪装），那么它也就没办法成功伪装了。
+你可能已经注意到我们把随机值放在了_csrf参数里。现在恶意网站就没办法知道正确的_csrf值（恶意网站必须提供正确的_csrf值来进行伪装），那么它也就没办法成功伪装了。
 
-## 19.3 [When to use CSRF protection](https://docs.spring.io/spring-security/site/docs/5.0.6.RELEASE/reference/htmlsingle/#when-to-use-csrf-protection)
+## 19.3 [When to use CSRF protection什么时候需要CSRF防护？](https://docs.spring.io/spring-security/site/docs/5.0.6.RELEASE/reference/htmlsingle/#when-to-use-csrf-protection)
 
 When should you use CSRF protection? Our recommendation is to use CSRF protection for any request that could be processed by a browser by normal users. If you are only creating a service that is used by non-browser clients, you will likely want to disable CSRF protection.
-我们应该什么时候使用对CSRF采取防御措施呢？我们建议只要是通过浏览器和普通用户处理的请求都应该采取CSRF防御措施。如果你用来创建服务的客户端不是浏览器的话，那你就可以关闭CSRF防御了。
+我们应该什么时候使用对CSRF采取防御措施呢？**我们建议只要是普通用户通过浏览器发起的请求都应该采取CSRF防御措施。如果你创建的后端服务不是给浏览器访问使用的话，那你就可以不使用CSRF防御了。**
 
 ### 19.3.1 [CSRF protection and JSON](https://docs.spring.io/spring-security/site/docs/5.0.6.RELEASE/reference/htmlsingle/#csrf-protection-and-json)
 
 A common question is "do I need to protect JSON requests made by javascript?" The short answer is, it depends. However, you must be very careful as there are CSRF exploits that can impact JSON requests. For example, a malicious user can create a <a class="ulink" href="http://blog.opensecurityresearch.com/2012/02/json-csrf-with-parameter-padding.html" target="_top">CSRF with JSON using the following form</a>:
 一个常见的问题是“我需要把javascript发起的JSON请求保护起来吗？”答案是看情况而定。然而你需要非常小心，一些操作可以利用CSRF漏洞的对JSON请求产生影响。举个例子，恶意用户可以使用下面的表单来伪造JSON数据
+
+:triangular_flag_on_post: 注意: form表单默认的Content-Type是application/x-www-form-urlencoded，请求参数的格式是：amount=100.00&routingNumber=1234&account=9876&_csrf=123456。假如你的后端服务接收的是JSON串，且没有做CSRF防护措施，那么攻击者可以使用下面的表单来伪造JSON请求。
 ```html
 <form action="https://bank.example.com/transfer" method="post" enctype="text/plain">
 <input name='{"amount":100,"routingNumber":"evilsRoutingNumber","account":"evilsAccountNumber", "ignore_me":"' value='test"}' type='hidden'>
@@ -102,7 +104,7 @@ What if my application is stateless? That doesn’t necessarily mean you are pro
 如果应用程序是无状态的，是不是意味着不需要进行CSRF防御呢？答案是同样需要。事实上，即使用户不对浏览器请求进行任何操作，同样容易受到跨站请求伪造攻击。
 
 For example, consider an application uses a custom cookie that contains all the state within it for authentication instead of the JSESSIONID. When the CSRF attack is made the custom cookie will be sent with the request in the same manner that the JSESSIONID cookie was sent in our previous example.
-举个例子，假如程序把所有身份验证相关的状态信息保存在自定义的cookie中，而不是保存在JSESSIONID里。那么当CSRF攻击发生时，这个自定义的cookie同样会随着请求发送出去（即使恶意网站看不到cookie的内容），这个先前的把JSESSIONID保存到cookie中例子一样。
+举个例子，假如程序把所有身份验证相关的状态信息保存在自定义的cookie中，而不是保存在JSESSIONID里。那么当CSRF攻击发生时，这个自定义的cookie同样会随着请求发送出去（即使恶意网站看不到cookie的内容）。
 
 Users using basic authentication are also vulnerable to CSRF attacks since the browser will automatically include the username password in any requests in the same manner that the JSESSIONID cookie was sent in our previous example.
 用户使用简单的身份验证同样容易受到CSRF的攻击，因为浏览器一般会自动把用户名、密码附在所有请求上，和先前例子里的JSESSIONID cookie一样。
@@ -211,7 +213,7 @@ $(document).ajaxSend(function(e, xhr, options) {
 });
 ```
 As an alternative to jQuery, we recommend using <a class="ulink" href="http://cujojs.com/" target="_top">cujoJS’s</a> rest.js. The <a class="ulink" href="https://github.com/cujojs/rest" target="_top">rest.js</a> module provides advanced support for working with HTTP requests and responses in RESTful ways. A core capability is the ability to contextualize the HTTP client adding behavior as needed by chaining interceptors on to the client.
-另一种替代jQuery的方式是，我们推荐的 <a class="ulink" href="http://cujojs.com/" target="_top">cujoJS</a>的rest.js。rest.js的模块提供了更高级一点的处理，支持对HTTP请求和响应以RESTful方式进行处理。一个核心的功能是，<span style="color: #ff0000;">通过链式拦截器来提供HTTP客户端的上下文处理能力（这句不知道怎么翻译）</span>。
+另一种替代jQuery的方式是，我们推荐的 <a class="ulink" href="http://cujojs.com/" target="_top">cujoJS</a>的rest.js。rest.js的模块提供了更高级一点的处理，支持对HTTP请求和响应以RESTful方式进行处理。一个核心的功能是，通过链式语法连接拦截器到client上来添加行为，实现HTTP client的语义化。
 ```javascript
 var client = rest.chain(csrf, {
 token: $("meta[name='_csrf']").attr("content"),
@@ -288,7 +290,7 @@ One issue is that the expected CSRF token is stored in the HttpSession, so as so
 </tr>
 <tr>
 <td align="left" valign="top">One might ask why the expected <code class="literal">CsrfToken</code> isn’t stored in a cookie by default. This is because there are known exploits in which headers (i.e. specify the cookies) can be set by another domain. This is the same reason Ruby on Rails <a class="ulink" href="http://weblog.rubyonrails.org/2011/2/8/csrf-protection-bypass-in-ruby-on-rails/" target="_top">no longer skips CSRF checks when the header X-Requested-With is present</a>. See <a class="ulink" href="http://lists.webappsec.org/pipermail/websecurity_lists.webappsec.org/2011-February/007533.html" target="_top">this webappsec.org thread</a> for details on how to perform the exploit. Another disadvantage is that by removing the state (i.e. the timeout) you lose the ability to forcibly terminate the token if it is compromised.
-有人可能会问，为什么<code class="literal">CsrfToken</code>默认不是保存在cookie里的。因为有一些已知的漏洞可以在不同的域名下设置请求头部（也就是指定cookie）(这句话其实我也不懂)。这也是为什么当<a class="ulink" href="http://weblog.rubyonrails.org/2011/2/8/csrf-protection-bypass-in-ruby-on-rails/" target="_top"> X-Requested-With</a>请求头存在的情况下，X-Ruby on Rails也不跳过CSRF检查的原因。详情参考<a class="ulink" href="http://lists.webappsec.org/pipermail/websecurity_lists.webappsec.org/2011-February/007533.html" target="_top">webappsec.org</a>。移除状态（也就是超时）的缺点是，如果令牌被盗，那么你将没有办法强制销毁那个被盗的令牌。</td>
+有人可能会问，为什么<code class="literal">CsrfToken</code>默认不是保存在cookie里的。因为有一些已知的漏洞可以在不同的域名下设置请求头部（也就是指定cookie）(这句话其实我也不懂)。这也是为什么当<a class="ulink" href="http://weblog.rubyonrails.org/2011/2/8/csrf-protection-bypass-in-ruby-on-rails/" target="_top"> X-Requested-With</a>请求头存在的情况下，X-Ruby on Rails也不跳过CSRF检查的原因。详情参考<a class="ulink" href="http://lists.webappsec.org/pipermail/websecurity_lists.webappsec.org/2011-February/007533.html" target="_top">webappsec.org</a>。另一个缺陷是，假如移除了状态（也就是超时），（如果令牌被盗）那么你将没有办法强制销毁那个可能存在安全风险的令牌（被盗的令牌）。</td>
 </tr>
 </tbody>
 </table>
