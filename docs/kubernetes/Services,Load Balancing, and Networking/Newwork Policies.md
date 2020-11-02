@@ -89,3 +89,172 @@ So, the example NetworkPolicy:
 3. （出口Egress规则）允许从“default”命名空间中标签为“role=db”的任何pod流出到TCP端口为5978且CIDR为10.0.0.0/24的流量
 
 See the [Declare Network Policy](https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/) walkthrough for further examples
+
+## Behavior of `to` and `from` selectors
+
+有四种选择器可以在ingress from或者egress to里面定义：
+
+- podSelector：这将选择与NetworkPolicy相同命名空间中的特定pod
+- namespaceSelector：它选择特定的命名空间，所有pod都可以作为ingress source或egress destinations。
+- namespaceSelector和podSelector：一个指定namespaceSelector和podSelector的to/from条目选择特定命名空间中的特定pod。请注意使用正确的YAML语法；此策略：
+  ```yaml
+  ...
+    ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            user: alice
+        podSelector:
+          matchLabels:
+            role: client
+    ...
+  ```
+  值包含一个from元素，允许来自标签为user=alice的命名空间中标签为role=client的pod的连接。但是这个政策：
+  ```yaml
+      ...
+      ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              user: alice
+        - podSelector:
+            matchLabels:
+              role: client
+      ...
+  ```
+  from数组中的有两个元素，则允许来自标签为role=client的本地命名空间中的Pod的连接，或来自标签user=alice的任何名称空间中的任何Pod的连接。
+
+  如果有疑问，请使用kubectl describe查看Kubernetes如何解释该策略。
+
+- ipBlock： 这将选择特定的IP CIDR范围作为ingress sources或egress destinations。这些应该是集群外部IP，因为Pod IP是短暂的和不可预测的。
+  
+  集群ingress和egress机制通常需要重写数据包的源或目标IP。对于这种情况，没有定义是在NetworkPolicy处理之前还是之后发生，并且对于网络插件、云提供商、服务实现等的不同组合，相应的行为可能会有所不同。
+
+  以上重写如果发生在ingress的情况下，这意味着在某些情况下，您可以根据实际的原始源IP过滤传入的数据包，然而在其他情况下，NetworkPolicy作用的“源IP”可能是负载平衡器或Pod节点的IP等。
+
+  如果重写发生在egress过程，这意味着从Pod到Service IP的连接（这些IP被重写为群集外部IP）可能会或可能不受ipBlock的策略的约束
+
+## Default policies
+
+默认情况下，如果命名空间中不存在策略，则允许该命名空间中所有进出Pod的流量。下面的示例允许您更改该命名空间中的默认行为
+
+### Default deny all ingress traffic
+您可以通过创建一个NetworkPolicy来为命名空间创建一个“默认”隔离策略，该策略选择所有pod，但不允许任何流量进入这些pod
+
+service/networking/network-policy-default-deny-ingress.yaml 
+
+```yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+```
+
+这可以确保即使未被任何其他NetworkPolicy选择的pod也会被隔离。此策略不会更改默认egress隔离行为
+
+### Default allow all ingress traffic
+
+如果希望允许对命名空间中所有pod的所有流量（即使添加的策略导致某些pod被视为“隔离”），则可以创建一个策略，显式允许该命名空间中的所有流量。
+
+service/networking/network-policy-allow-all-ingress.yaml
+```yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-ingress
+spec:
+  podSelector: {}
+  ingress:
+  - {}
+  policyTypes:
+  - Ingress
+```
+
+### Default deny all egress traffic 
+
+您可以通过创建一个NetworkPolicy来为命名空间创建一个“默认”出口隔离策略，该策略选择所有pod，但不允许来自这些pod的任何出去的流量。
+
+service/networking/network-policy-default-deny-egress.yaml 
+
+```yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+```
+这可以确保即使未被任何其他网络策略选择的pod也不会被允许有流量出站。此策略不会更改默认的ingress隔离行为
+
+### Default allow all egress traffic
+
+如果希望允许来自命名空间中所有pod的所有流量（即使添加的策略导致某些pod被视为“隔离”），则可以创建一个策略，显式允许该命名空间中的所有出口流量。
+
+service/networking/network-policy-allow-all-egress.yaml
+```yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress
+spec:
+  podSelector: {}
+  egress:
+  - {}
+  policyTypes:
+  - Egress
+```
+
+### Default deny all ingress and all egress traffic
+
+您可以为一个命名空间创建一个“默认”策略，通过在该命名空间中创建以下NetworkPolicy来阻止所有进出流量。
+service/networking/network-policy-default-deny-all.yaml
+```yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+```
+
+这可以确保即使未被任何其他网络策略选择的pod也不会被允许有流量进入或离开
+
+## SCTP support
+*FEATURE STATE: Kubernetes v1.19 [beta]*
+
+作为beta特性，默认情况下是启用的。要在集群级别禁用SCTP，您（或您的集群管理员）需要使用`--feature-gates=SCTPSupport=false,….`为API服务器禁用SCTPSupport特性门。启用功能后，可以将NetworkPolicy的protocol字段设置为SCTP。
+
+> :book: 注意：您必须使用支持SCTP协议网络策略的CNI插件。
+
+## What you CAN'T do with network policy's (at least, not yet) 
+
+从Kubernetes 1.20开始，NetworkPolicy API中不存在以下功能，但您可以使用操作系统组件（如SELinux、OpenVSwitch、IPTables等）或第7层技术（入口控制器、服务网格实现）或admission controllers来实现这些功能。如果您不熟悉Kubernetes中的网络安全性，那么值得注意的是，以下用户情景（目前）还不能使用NetworkPolicy API来实现。这些用户案例中的一些（但不是全部）正在积极讨论，以备将来的NetworkPolicy API版本使用。
+- 强制内部集群流量通过一个公共网关（这可能最好使用服务网格或其他代理解决）。
+- 任何与TLS相关的东西（使用服务网格或入口控制器解决）。
+- 特定于节点的策略（您可以对这些策略使用CIDR表示法，但是不能通过节点的Kubernetes标识来确定目标节点）。
+- 按名称确定命名空间或service（但是，您可以通过标签确定pod或命名空间，这通常是一种可行的解决方法）。
+- 创建或管理由第三方完成的“策略请求”。
+- 应用于所有名称空间或pod的默认策略（有一些第三方Kubernetes发行版和项目可以做到这一点）。
+- 高级策略查询和可达性工具。
+- 在一个策略声明中确定端口范围的能力。
+- 记录网络安全事件（例如记录被阻止或接受的连接）的能力。
+- 显式拒绝策略的能力（当前NetworkPolicies的模型默认情况下是deny，只有添加allow规则的能力）。
+- 防止环回(loopback)或传入主机流量(incoming host traffic)的能力（Pods当前不能阻止localhost访问，也不能阻止来自其所在节点的访问）。
+
+## What's next
+See the [Declare Network Policy](https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/) walkthrough for further examples.
+See more [recipes](https://github.com/ahmetb/kubernetes-network-policy-recipes) for common scenarios enabled by the NetworkPolicy resource.
