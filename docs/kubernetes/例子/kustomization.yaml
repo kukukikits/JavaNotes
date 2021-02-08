@@ -1,0 +1,27 @@
+secretGenerator:
+- name: mysql-pass
+  literals:
+  - password=123456
+configMapGenerator:
+- name: init-data
+  files:
+  - a-schema.sql.gz
+  - b-data.sql.gz
+- name: mysql.cnf
+  files:
+  - mysql.cnf
+# 开发环境rocketmq-broker的配置
+- name: rocket-broker-conf
+  files:
+  - /broker.conf
+- name: redis.conf
+  files:
+  - redis.conf
+
+resources:
+# 数据库手动部署好了，就不要再动了
+#- kubernetes/mysql-deployment.yaml
+- deployment.yaml
+- rocketmq-deployment.yaml
+- dev-rocketmq-deployment.yaml
+- redis-deployment.yaml

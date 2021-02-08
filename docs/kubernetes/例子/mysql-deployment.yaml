@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ar-glass-mysql
+  labels:
+    app: ar-glass
+spec:
+  ports:
+  - port: 3306
+  selector:
+    app: ar-glass
+    tier: mysql
+  clusterIP: None
+---
+#kind: PersistentVolume
+#apiVersion: v1
+#metadata:
+#  name: arglass-mysql-docker77-host-pv
+#  annotations:
+#    pv.kubernetes.io/bound-by-controller: 'yes'
+#  finalizers:
+#  - kubernetes.io/pv-protection
+#spec:
+#  capacity:
+#    storage: 1Gi
+#  hostPath:
+#    path: /data/ar-glass/mysql
+#    type: ''
+#  accessModes:
+#   - ReadWriteMany
+#  persistentVolumeReclaimPolicy: Retain
+#  storageClassName: standard
+#  volumeMode: Filesystem
+#  nodeAffinity:
+#    required:
+#      nodeSelectorTerms:
+#      - matchExpressions:
+#        - key: kubernetes.io/hostname
+#          operator: In
+#          values:
+#          - docker77.c.com
+
+
+#---
+#kind: PersistentVolume
+#apiVersion: v1
+#metadata:
+#  name: ar-glass-mysql-pv-claim
+#spec:
+#  capacity:
+#    storage: 1Gi
+#  hostPath:
+#    path: /tmp/hostpath-provisioner/ar-glass-pvc
+#    type: ''
+#  accessModes:
+#  - ReadWriteOnce
+#  persistentVolumeReclaimPolicy: Retain
+#  storageClassName: standard
+#  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: arglass-mysql-host-pv-claim
+  labels:
+    app: ar-glass
+spec:
+  storageClassName: standard
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: ar-glass-mysql
+  labels:
+    app: ar-glass
+spec:
+  selector:
+    matchLabels:
+      app: ar-glass
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        tier: mysql
+    spec:
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/hostname: docker77.c.com
+      containers:
+      - image: mysql:5.7.30
+        name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        - name: MYSQL_DATABASE
+          value: ar-glass
+        args:
+        - "--character-set-server=utf8mb4"
+        - "--collation-server=utf8mb4_unicode_ci"
+        ports:
+        - containerPort: 3306
+          hostPort: 33306
+          protocol: TCP
+          name: mysql
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+        - name: init-data
+          readOnly: true
+          mountPath: /docker-entrypoint-initdb.d
+        - name: mysql-conf
+          mountPath: /etc/mysql/conf.d
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: arglass-mysql-host-pv-claim
+      - name: init-data
+        configMap:
+          name: init-data
+      - name: mysql-conf
+        configMap:
+          name: mysql.cnf
+#      imagePullSecrets:
+#      - name: registry.d.com

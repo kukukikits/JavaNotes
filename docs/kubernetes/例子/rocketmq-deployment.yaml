@@ -1,0 +1,162 @@
+# 持续集成环境的rocketmq配置
+apiVersion: v1
+kind: Service
+metadata:
+  name: ar-glass-rocketmq-nameserver
+  labels:
+    app: ar-glass
+spec:
+  ports:
+  - port: 9876
+  selector:
+    app: ar-glass
+    componment: rocketmq-nameserver
+    name: rocketmq-nameserver
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ar-glass-rocketmq-console-ng
+  labels:
+    app: ar-glass
+spec:
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+  selector:
+    app: ar-glass
+    componment: rocketmq-console-ng
+    name: rocketmq-console-ng
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: rocketmq-ns-deployment
+  labels:
+    app: ar-glass
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ar-glass
+      componment: rocketmq-nameserver
+      name: rocketmq-nameserver
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        componment: rocketmq-nameserver
+        name: rocketmq-nameserver
+    spec:
+      imagePullSecrets:
+      - name: registry.d.com
+      containers:
+      - name: rocketmq-nameserver
+        image: registry.d.com/ar-glass/rocketmq:latest
+        command: ["sh","mqnamesrv"]
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9876
+        volumeMounts:
+        - mountPath: /home/rocketmq/logs
+          name: namesrvlogs
+        resources:
+          limits:
+            memory: "256Mi"
+          requests:
+            memory: "128Mi"
+      volumes:
+      - name: namesrvlogs
+        emptyDir: {}
+      - name: namesrvstore
+        emptyDir: {}
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: rocketmq-broker-deployment
+  labels:
+    app: ar-glass
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ar-glass
+      componment: rocketmq-broker
+      name: rocketmq-broker
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        componment: rocketmq-broker
+        name: rocketmq-broker
+    spec:
+      imagePullSecrets:
+      - name: registry.d.com
+      containers:
+      - name: rocketmq-broker
+        image: registry.d.com/ar-glass/rocketmq:latest
+        command: ["sh","mqbroker", "-n","ar-glass-rocketmq-nameserver:9876"]
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 10909
+        - containerPort: 10911
+        volumeMounts:
+        - mountPath: /home/rocketmq/logs
+          name: brokerlogs
+        - mountPath: /home/rocketmq/store
+          name: brokerstore
+        resources:
+          limits:
+            memory: "256Mi"
+          requests:
+            memory: "128Mi"
+      volumes:
+      - name: brokerlogs
+        emptyDir: {}
+      - name: brokerstore
+        emptyDir: {}
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: rocketmq-console-ng-deployment
+  labels:
+    app: ar-glass
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ar-glass
+      componment: rocketmq-console-ng
+      name: rocketmq-console-ng
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        componment: rocketmq-console-ng
+        name: rocketmq-console-ng
+    spec:
+      initContainers:
+      - name: wait-for-rocketmq-namesrv
+        image: registry.d.com/ar-glass/busybox:latest
+        command: ['sh', '-c', "until nslookup ar-glass-rocketmq-nameserver; do echo waiting for service ar-glass-rocketmq-nameserver; sleep 2; done"]
+      containers:
+      - name: rocketmq-console-ng
+        image: registry.d.com/ar-glass/rocketmq-console-ng:latest
+        env:
+        - name: JAVA_OPTS
+          value: "-Drocketmq.namesrv.addr=ar-glass-rocketmq-nameserver:9876 -Dcom.rocketmq.sendMessageWithVIPChannel=false -Xmx128m -XX:+UseG1GC"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "500Mi"
+          requests:
+            memory: "128Mi"
+      imagePullSecrets:
+      - name: registry.d.com

@@ -1,0 +1,101 @@
+# 开发环境的Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-ar-glass-redis
+  labels:
+    app: ar-glass
+    profile: dev
+spec:
+  selector:
+    matchLabels:
+      app: ar-glass
+      tier: redis
+      profile: dev
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        tier: redis
+        profile: dev
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: mydocker.d.com
+      imagePullSecrets:
+      - name: registry.com
+      containers:
+      - image: redis:6.0.1
+        name: redis-dev
+        ports:
+        - name: redis
+          containerPort: 6379
+          hostPort: 36379
+        volumeMounts:
+#        - name: redis-persistent-storage
+#          mountPath: /var/lib/redis
+        - name: redis-conf
+          mountPath: /srv/volume/redis/conf
+      volumes:
+#      - name: redis-persistent-storage
+#        persistentVolumeClaim:
+#          claimName: ar-glass-redis-pv-claim
+      - name: redis-conf
+        configMap:
+          name: redis.conf
+---
+# 集成测试环境中的Redis
+apiVersion: v1
+kind: Service
+metadata:
+  name: ar-glass-redis
+  labels:
+    app: ar-glass
+    profile: prod
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: ar-glass
+    tier: redis
+    profile: prod
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ar-glass-redis
+  labels:
+    app: ar-glass
+    profile: prod
+spec:
+  selector:
+    matchLabels:
+      app: ar-glass
+      tier: redis
+      profile: prod
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ar-glass
+        tier: redis
+        profile: prod
+    spec:
+      imagePullSecrets:
+      - name: registry.com
+      containers:
+      - image: redis:6.0.1
+        name: redis
+        ports:
+        - name: redis
+          containerPort: 6379
+        volumeMounts:
+        - name: redis-conf
+          mountPath: /srv/volume/redis/conf
+      volumes:
+      - name: redis-conf
+        configMap:
+          name: redis.conf

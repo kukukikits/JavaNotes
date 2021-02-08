@@ -1,0 +1,45 @@
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: ar-glass-easy-darwin
+  labels:
+    app: ar-glass
+spec:
+  selector:
+    matchLabels:
+      app: ar-glass-easy-darwin
+      tier: server
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ar-glass-easy-darwin
+        tier: server
+    spec:
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/hostname: mydocker.d.com
+      containers:
+      - image: easy-darwin
+        name: easy-darwin
+        # env:
+        # - name: DEFAULT_USERNAME
+        #   value: admin
+        # - name: DEFAULT_PASSWORD
+        #   value: easy666
+        # - name: AUTHORIZATION_TYPE
+        #   value: Basic
+        ports:
+        - containerPort: 554
+          hostPort: 33554
+          protocol: TCP
+          name: rtsp-tcp-port
+        - containerPort: 554
+          hostPort: 33554
+          protocol: UDP
+          name: rtsp-udp-port
+        - containerPort: 10008
+          hostPort: 10008
+          protocol: TCP
+          name: http-port

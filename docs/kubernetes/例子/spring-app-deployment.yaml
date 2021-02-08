@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-internet-entrypoint
+  labels:
+    app: server
+    kubernetes.io/hostname: docker138.c.com
+spec:
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 34416
+    protocol: TCP
+    name: http
+  selector:
+    app: server
+    tier: web-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  labels:
+    app: server
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: server
+    tier: web-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  selector:
+    matchLabels:
+      app: server
+      tier: web-server
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: server
+        tier: web-server
+    spec:
+      initContainers:
+      - name: init-mysql
+        image: busybox:1.28
+        command: ['sh', '-c', "until nslookup glass-mysql; do echo waiting for service glass-mysql; sleep 2; done"]
+      containers:
+      - name: server
+        image: $placeHolder
+        env:
+          - name: SERVER_PORT
+            value: '80'
+          - name: FILE_STORAGE_PATH
+            value: '/data'
+        command:
+        - "java"
+        - "-Xmx256m"
+        - "-XX:+UseG1GC"
+        - "-Djava.security.egd=file:/dev/./urandom"
+        - "-jar"
+        - "/app.jar"
+        - "--spring.profiles.active=prod"
+        - "--spring.datasource.url=jdbc:mysql://glass-mysql:3306/glass?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai"
+        - "--spring.redis.host=glass-redis"
+        - "--spring.redis.port=6379"
+        - "--face.engine.recognize-model-file=/jniLibs/fr_2_10.dat"
+        - "--face.engine.detect-model-file=/jniLibs/fd_2_00.dat"
+        - "--face.engine.marker-model-file=/jniLibs/pd_2_00_pts5.dat"
+        imagePullPolicy: Always
+        ports:
+        - protocol: TCP
+          hostPort: 34416
+          containerPort: 80
+        volumeMounts:
+        - name: server-file-storage
+          mountPath: /data
+      imagePullSecrets:
+        - name: registry.d.com
+      volumes:
+      - name: server-file-storage
+        persistentVolumeClaim:
+          claimName: server-file-pv-claim
+      nodeSelector:
+        kubernetes.io/hostname: mydocker.d.com
