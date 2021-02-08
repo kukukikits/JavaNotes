@@ -176,9 +176,15 @@ class ResultPushingThread (threading.Thread):
             '-vcodec','rawvideo',
             '-pix_fmt', 'bgr24',
             '-s', self.size,
-            #'-r', str(self.fps),
+            #'-r', str(self.fps), # 默认fps是25
             '-i', '-',
+            # https://github.com/arut/nginx-rtmp-module/issues/378#issuecomment-323592252
             '-c:v', 'libx264',
+            '-b:v', '500k', # 码率
+            '-crf', '30',   # 0 to 63, 数字越大表示质量越低，输出大小越小
+            '-intra-refresh', '1',
+            # https://stackoverflow.com/questions/43868982/low-latency-dash-nginx-rtmp/45370210#45370210
+            '-g', '50',     # 设置关键帧间隔， The default GOP size for ffmpeg is 250 which means there will be a key frame every 250 frames.
             '-pix_fmt', 'yuv420p',
             '-preset', 'ultrafast',
             '-tune', 'zerolatency',
