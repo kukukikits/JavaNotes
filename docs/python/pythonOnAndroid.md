@@ -73,3 +73,109 @@ python setup.py build_ext --inplace
 ```shell
 cython --embed -o embedded.cpp embedded.pyx
 ```
+
+5. JNI相关接口编写
+
+```cpp
+#include <jni.h>
+#include "embedded.h"
+int cleanup(wchar_t* program) {
+    PyMem_RawFree(program);
+    Py_Finalize();
+    return -1;
+}
+
+jbyteArray to_jbyteArray(JNIEnv *env, std::string result) {
+    int byteCount = static_cast<int>(result.length());
+    const jbyte *pNativeMessage = reinterpret_cast<const jbyte *>(result.c_str());
+    jbyteArray bytes = env->NewByteArray(byteCount);
+    env->SetByteArrayRegion(bytes, 0, byteCount, pNativeMessage);
+    return bytes;
+}
+const wchar_t *GetWC(const char *c)
+{
+    const size_t cSize = strlen(c)+1;
+    wchar_t* wc = new wchar_t[cSize];
+    mbstowcs (wc, c, cSize);
+
+    return wc;
+}
+
+wchar_t* program;
+
+extern "C"
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_arcare_detect_HandTracking_getGesture(JNIEnv *env, jclass clazz,
+                                                              jintArray key_points,
+                                                              jint threshold) {
+    jsize size = env->GetArrayLength( key_points );
+    std::vector<int> input( size );
+
+    env->GetIntArrayRegion( key_points, 0, size, &input[0] );
+    string result = "{}";
+    //result = to_string(say_hello_from_python());
+
+    // get_result为embedded.h中的方法
+    result = get_result(input, threshold);
+    //__android_log_write(ANDROID_LOG_ERROR, "DEMO", result.data());
+    return to_jbyteArray(env, result);
+}extern "C"
+JNIEXPORT jint JNICALL
+Java_com_example_arcare_detect_HandTracking_initPythonInterpreter(JNIEnv *env,
+                                                                         jclass clazz,
+                                                                         jstring stdlib_path) {
+    jboolean isCopy;	// 返回JNI_TRUE表示原字符串的拷贝，返回JNI_FALSE表示返回原字符串的指针
+    const char *setPath;
+    setPath = env->GetStringUTFChars(stdlib_path, &isCopy);
+
+    const wchar_t *sp;
+    sp = GetWC(setPath);
+
+    Py_SetPath(sp);
+
+    if (isCopy == JNI_TRUE) {
+        env->ReleaseStringUTFChars(stdlib_path, setPath);
+    }
+
+    // ---------------
+    std::string result = "python init success";
+
+    /*Py_Initialize ();
+    Py_Finalize ();*/
+    program = Py_DecodeLocale("", NULL);
+    if (program == NULL) {
+        result = "Py_DecodeLocale failed";
+    }
+
+    /* Add a built-in module, before Py_Initialize */
+    if (PyImport_AppendInittab("embedded", PyInit_embedded) == -1) {
+        result = "Error: could not extend in-built modules table";
+    }
+
+    /* Pass argv[0] to the Python interpreter */
+    Py_SetProgramName(program);
+
+    /* Initialize the Python interpreter.  Required.
+       If this step fails, it will be a fatal error. */
+    Py_Initialize();
+
+    /* Optionally import the module; alternatively,
+       import can be deferred until the embedded script
+       imports it. */
+    PyObject* pmodule;
+    pmodule = PyImport_ImportModule("embedded");
+    if (!pmodule) {
+        result = "Error: could not import module 'gesture2'";
+        cleanup(program);
+        return -1;
+    }
+    return 0;
+}extern "C"
+JNIEXPORT jint JNICALL
+Java_com_example_arcare_detect_HandTracking_releasePythonInterpreter(JNIEnv *env,
+                                                                            jclass clazz) {
+    cleanup(program);
+    free(program);
+    return 0;
+}
+```
