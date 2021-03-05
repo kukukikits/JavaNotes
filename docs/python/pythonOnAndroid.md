@@ -76,6 +76,56 @@ cython --embed -o embedded.cpp embedded.pyx
 
 5. JNI相关接口编写
 
+相关Java文件
+```java
+import android.content.Context;
+import android.util.Log;
+import com.example.arcare.python.AssetExtractor;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+
+public class HandTracking {
+    static {
+         //加载python3.5m.so文件。该文件需要从crystax-ndk-10.3.2（下载地址：https://www.crystax.net/en/download）
+         //里面解压出来，拷贝到工程里
+        System.loadLibrary("python3.5m"); 
+    }
+
+    public HandTracking(Context mContext) {
+        loadPy(mContext);
+    }
+
+    //cle调用python代码
+    private void loadPy(Context mContext){
+        // Extract python files from assets
+        AssetExtractor assetExtractor = new AssetExtractor(mContext);
+        assetExtractor.removeAssets("python");
+        assetExtractor.copyAssets("python");
+
+        // Get the extracted assets directory
+        String pyPath = assetExtractor.getAssetsDataDir() + "python";
+
+        // 初始化python时需要stdlib.zip的一个文件
+        String stdlibPath = pyPath + File.separator + "stdlib.zip";
+
+        Log.i("CallPython", stdlibPath);
+
+        initPythonInterpreter(stdlibPath);
+    }
+    public String getGestureResult(int[] key_points, int threshold) {
+        return new String(getGesture(key_points, threshold), StandardCharsets.UTF_8);
+    }
+
+    private native static int initPythonInterpreter(String stdlibPath);
+    private native static int releasePythonInterpreter();
+    public native static int gestureRecognize() ;
+
+    private native byte[] getGesture(int[] key_points, int threshold);
+}
+
+```
+
+相关CPP文件
 ```cpp
 #include <jni.h>
 #include "embedded.h"
